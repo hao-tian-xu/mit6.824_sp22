@@ -1,10 +1,13 @@
 package mr
 
-import "fmt"
+import (
+	"fmt"
+	"io/ioutil"
+	"os"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
-
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,7 +27,6 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
@@ -32,9 +34,107 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	for {
+		task, ok := getTask()
+		if !ok {
+			// TODO
+		}
+
+		if task.taskType == MapTask {
+			_mapf(mapf, task.fileName, task.id)
+			sendTaskDone(task.taskType, task.id)
+		} else if task.taskType == ReduceTask {
+			_reducef(reducef, task.id)
+			sendTaskDone(task.taskType, task.id)
+		} else if task.taskType == NoTask {
+		}
+		// TODO: all tasks finished
+		// TODO: task interval
+	}
+
+	// archive
+	//// TODO: send an RPC to the coordinator asking for a task
+	//args := GetTaskArgs{}
+	//reply := GetTaskReply{}
+	//ok := call("Coordinator.GetTask", &args, &reply)
+	//if !ok {
+	//	fmt.Printf("call failed!\n")
+	//}
+	//
+	//if reply.Type == MAP {
+	//	// TODO: Map task
+	//	filename := reply.FileName
+	//	file, err := os.Open(filename)
+	//	if err != nil {
+	//		log.Fatalf("cannot open %v", filename)
+	//	}
+	//	content, err := ioutil.ReadAll(file)
+	//	if err != nil {
+	//		log.Fatalf("cannot read %v", filename)
+	//	}
+	//	file.Close()
+	//	mapf(filename, string(content))
+	//	// TODO: save intermediate file
+	//
+	//	// TODO: send intermediate file location to coordinator
+	//
+	//	// TODO: change task state
+	//} else if reply.Type == REDUCE {
+	//	// TODO: Reduce task
+	//
+	//	// TODO: save output file
+	//
+	//	// TODO: change task state
+	//}
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+
+}
+
+//
+// worker stub
+//
+func getTask() (*GetTaskReply, bool) {
+	args := GetTaskArgs{os.Getpid()}
+	reply := GetTaskReply{}
+	ok := call("Coordinator.GetTask", &args, &reply)
+	if !ok {
+		fmt.Printf("get task failed!\n")
+	}
+	return &reply, ok
+}
+
+//
+// worker stub
+//
+func sendTaskDone(taskType TaskType, id int) {
+
+}
+
+//
+// process map task and send intermediate file location to coordinator
+//
+func _mapf(mapf func(string, string) []KeyValue, fileName string, id int) {
+	file, err := os.Open(fileName)
+	if err != nil {
+		log.Fatalf("cannot open %v", fileName)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", fileName)
+	}
+	file.Close()
+	kva := mapf(fileName, string(content))
+
+	_writeIntermediate(kva, id)
+}
+
+func _writeIntermediate(kva []KeyValue, id int) {
+
+}
+
+func _reducef(reducef func(string, []string) string, id int) {
 
 }
 
