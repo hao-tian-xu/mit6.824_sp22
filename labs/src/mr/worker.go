@@ -1,9 +1,13 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
+	"sort"
+	"time"
 )
 import "log"
 import "net/rpc"
@@ -16,6 +20,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -37,63 +49,29 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		task, ok := getTask()
 		if !ok {
-			// TODO
+			fmt.Printf("call failed! worker exits\n")
+			return
 		}
-
-		if task.taskType == MapTask {
-			_mapf(mapf, task.fileName, task.id)
-			sendTaskDone(task.taskType, task.id)
-		} else if task.taskType == ReduceTask {
-			_reducef(reducef, task.id)
-			sendTaskDone(task.taskType, task.id)
-		} else if task.taskType == NoTask {
+		switch task.taskType {
+		case Exit:
+			break
+		case NoIdle:
+		case MapTask:
+			_mapf(mapf, task.fileName, task.taskId, task.nReduce)
+			reportTaskDone(task.taskType, task.taskId)
+		case ReduceTask:
+			_reducef(reducef, task.taskId)
+			reportTaskDone(task.taskType, task.taskId)
 		}
-		// TODO: all tasks finished
-		// TODO: task interval
+		// task interval
+		time.Sleep(time.Millisecond * 100)
 	}
-
-	// archive
-	//// TODO: send an RPC to the coordinator asking for a task
-	//args := GetTaskArgs{}
-	//reply := GetTaskReply{}
-	//ok := call("Coordinator.GetTask", &args, &reply)
-	//if !ok {
-	//	fmt.Printf("call failed!\n")
-	//}
-	//
-	//if reply.Type == MAP {
-	//	// TODO: Map task
-	//	filename := reply.FileName
-	//	file, err := os.Open(filename)
-	//	if err != nil {
-	//		log.Fatalf("cannot open %v", filename)
-	//	}
-	//	content, err := ioutil.ReadAll(file)
-	//	if err != nil {
-	//		log.Fatalf("cannot read %v", filename)
-	//	}
-	//	file.Close()
-	//	mapf(filename, string(content))
-	//	// TODO: save intermediate file
-	//
-	//	// TODO: send intermediate file location to coordinator
-	//
-	//	// TODO: change task state
-	//} else if reply.Type == REDUCE {
-	//	// TODO: Reduce task
-	//
-	//	// TODO: save output file
-	//
-	//	// TODO: change task state
-	//}
-
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
-
 }
 
 //
-// worker stub
+// worker stub: GetTask
 //
 func getTask() (*GetTaskReply, bool) {
 	args := GetTaskArgs{os.Getpid()}
@@ -106,16 +84,21 @@ func getTask() (*GetTaskReply, bool) {
 }
 
 //
-// worker stub
+// worker stub: ReportTaskDone
 //
-func sendTaskDone(taskType TaskType, id int) {
-
+func reportTaskDone(taskType TaskType, taskId int) {
+	args := ReportTaskDoneArgs{taskType, taskId, os.Getpid()}
+	reply := ReportTaskDoneReply{}
+	ok := call("Coordinator.ReportTaskDone", &args, &reply)
+	if !ok {
+		fmt.Printf("send task done falied!\n")
+	}
 }
 
 //
 // process map task and send intermediate file location to coordinator
 //
-func _mapf(mapf func(string, string) []KeyValue, fileName string, id int) {
+func _mapf(mapf func(string, string) []KeyValue, fileName string, mapId int, nReduce int) {
 	file, err := os.Open(fileName)
 	if err != nil {
 		log.Fatalf("cannot open %v", fileName)
@@ -124,18 +107,93 @@ func _mapf(mapf func(string, string) []KeyValue, fileName string, id int) {
 	if err != nil {
 		log.Fatalf("cannot read %v", fileName)
 	}
-	file.Close()
+	if err := file.Close(); err != nil {
+		log.Fatal(err)
+	}
+
 	kva := mapf(fileName, string(content))
-
-	_writeIntermediate(kva, id)
+	writeIntermediateFile(kva, mapId, nReduce)
 }
 
-func _writeIntermediate(kva []KeyValue, id int) {
-
+func writeIntermediateFile(kva []KeyValue, mapId int, nReduce int) {
+	files := make([]*os.File, nReduce)
+	encs := make([]*json.Encoder, nReduce)
+	// temp files and encoders
+	for i := 0; i < nReduce; i++ {
+		file, err := ioutil.TempFile("", "temp.*")
+		if err != nil {
+			log.Fatal(err)
+		}
+		files[i] = file
+		encs[i] = json.NewEncoder(file)
+	}
+	// add kv pairs to files
+	for _, kv := range kva {
+		i := ihash(kv.Key)
+		if err := encs[i].Encode(&kv); err != nil {
+			log.Fatal(err)
+		}
+	}
+	// atomically rename and close
+	for i := 0; i < nReduce; i++ {
+		fileName := fmt.Sprintf("mr-%v-%v", mapId, i)
+		if err := os.Rename(files[i].Name(), fileName); err != nil {
+			log.Fatal(err)
+		}
+		if err := files[i].Close(); err != nil {
+			log.Fatal(err)
+		}
+	}
 }
 
-func _reducef(reducef func(string, []string) string, id int) {
+func _reducef(reducef func(string, []string) string, reduceId int) {
 
+	// read from files
+	kva := make([]KeyValue, 0, 100)
+	fileNames, err := filepath.Glob(fmt.Sprintf("mr-%v-%v", "*", reduceId))
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, fileName := range fileNames {
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+	}
+
+	// sort by key
+	sort.Sort(ByKey(kva))
+
+	// write to output file
+	ofile, err := ioutil.TempFile("", "temp.*")
+	if err != nil {
+		log.Fatal(err)
+	}
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+		i = j
+	}
+	oname := fmt.Sprintf("mr-out-%v", reduceId)
+	os.Rename(ofile.Name(), oname)
+	ofile.Close()
 }
 
 //

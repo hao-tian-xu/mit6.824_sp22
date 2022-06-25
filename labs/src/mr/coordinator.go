@@ -3,6 +3,7 @@ package mr
 import (
 	"log"
 	"sync"
+	"time"
 )
 import "net"
 import "os"
@@ -12,10 +13,11 @@ import "net/http"
 type Coordinator struct {
 	// Your definitions here.
 	sync.Mutex
-	mapTask      []Task
-	reduceTask   []Task
-	mapRemain    int
-	reduceRemain int
+	task map[TaskType][]Task
+	//mapTask      []Task
+	//reduceTask   []Task
+	remain  map[TaskType]int
+	nReduce int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -40,7 +42,7 @@ const (
 	// TaskType
 	MapTask = iota
 	ReduceTask
-	NoTask
+	NoIdle
 	Exit
 	// TaskState
 	Idle
@@ -52,32 +54,86 @@ const (
 // GetTask RPC handler
 //
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
-	// give a task to the worker
-	// TODO: finish map tasks first (no reading from remote disk)
+
+	// finish map tasks first, reasons:
+	// 1. no reading from remote disk
+	// 2. number of workers may not be over nReduce, thus failed map task may not have any worker to work on
 	c.Lock()
-	for _, task := range append(c.mapTask, c.reduceTask...) {
-		if task.taskState == Idle {
-			task.taskState = InProgress
+	if c.remain[MapTask] > 0 {
+		// map tasks not all done
+		c.giveTask(args, reply, MapTask)
+	} else if c.remain[ReduceTask] > 0 {
+		// reduce tasks not all done
+		c.giveTask(args, reply, ReduceTask)
+	} else {
+		// all tasks done
+		c.Unlock()
+		reply.taskType = Exit
+	}
+
+	// wait for the task to be done after return
+	taskType := reply.taskType
+	taskId := reply.taskId
+	defer func() {
+		if taskType == MapTask || taskType == ReduceTask {
+			time.Sleep(time.Second * 10)
+			task := c.task[taskType][taskId]
+			c.Lock()
+			if task.taskState != Completed {
+				task.taskState = Idle
+			}
 			c.Unlock()
-			task.workerId = args.workerId
-			reply.taskType = task.taskType
-			reply.id = task.taskId
-			reply.fileName = task.fileName
-			return nil
+		}
+	}()
+	return nil
+}
+
+func (c *Coordinator) giveTask(args *GetTaskArgs, reply *GetTaskReply, taskType TaskType) {
+
+	// find next idle task
+	task := Task{}
+	taskZero := task
+	for _, t := range c.task[taskType] {
+		if t.taskState == Idle {
+			task = t
+			break
 		}
 	}
-	// all tasks in process
-	reply.taskType = NoTask
-	return nil
 
-	// archive
-	//if len(c.files) == 0 {
-	//	reply.Type = "reduce"
-	//	// TODO: reduce Value
-	//} else {
-	//	reply.Type = MAP
-	//	reply.FileName, c.files = c.files[0], c.files[1:]
-	//}
+	// reply the task
+	if task != taskZero {
+		task.taskState = InProgress
+		c.Unlock()
+		task.workerId = args.workerId
+		reply.taskType = task.taskType
+		reply.taskId = task.taskId
+		reply.fileName = task.fileName
+		reply.nReduce = c.nReduce
+		return
+	}
+
+	// no idle task but some tasks in progress
+	c.Unlock()
+	reply.taskType = NoIdle
+}
+
+//
+// ReportTaskDone RPC handler
+//
+func (c *Coordinator) ReportTaskDone(args *ReportTaskDoneArgs, reply *ReportTaskDoneReply) error {
+
+	taskType := args.taskType
+	task := c.task[taskType][args.taskId]
+
+	// confirm that the task is valid, and mark it completed
+	c.Lock()
+	defer c.Unlock()
+	if task.taskState == InProgress && task.workerId == args.workerId {
+		task.taskState = Completed
+		c.remain[taskType] -= 1
+	}
+
+	return nil
 }
 
 //
@@ -111,11 +167,7 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-	return ret
+	return c.remain[MapTask] <= 0 && c.remain[ReduceTask] <= 0
 }
 
 //
@@ -137,8 +189,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for i := 0; i < nReduce; i++ {
 		reduceTask[i] = Task{ReduceTask, Idle, i, "", NA}
 	}
-	c.mapTask, c.reduceTask = mapTask, reduceTask
-	c.mapRemain, c.reduceRemain = nMap, nReduce
+	c.task = map[TaskType][]Task{MapTask: mapTask, ReduceTask: reduceTask}
+	//c.mapTask, c.reduceTask = mapTask, reduceTask
+	c.remain = map[TaskType]int{MapTask: nMap, ReduceTask: nReduce}
+	c.nReduce = nReduce
 
 	c.server()
 	return &c

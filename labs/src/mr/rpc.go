@@ -35,9 +35,21 @@ type GetTaskArgs struct {
 
 type GetTaskReply struct {
 	taskType TaskType
-	id       int
+	taskId   int
 	fileName string
+	nReduce  int
 }
+
+//
+// ReportTaskDone RPC definitions
+//
+type ReportTaskDoneArgs struct {
+	taskType TaskType
+	taskId   int
+	workerId int
+}
+
+type ReportTaskDoneReply struct{}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
