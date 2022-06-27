@@ -8,8 +8,8 @@ package mr
 
 import (
 	"os"
+	"strconv"
 )
-import "strconv"
 
 //
 // example to show how to declare the arguments

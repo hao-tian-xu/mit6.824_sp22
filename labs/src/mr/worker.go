@@ -46,10 +46,11 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	ind := 0
 	for {
 		task, ok := getTask()
 		if !ok {
-			log.Printf("worker#%v get task failed! worker exits...\n", os.Getpid())
+			log.Printf("get task failed! worker#%v exits...\n", os.Getpid())
 			return
 		}
 		switch task.TaskType {
@@ -57,7 +58,10 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Printf("all tasks completed! worker#%v exits...\n", os.Getpid())
 			return
 		case NoIdle:
-			log.Printf("worker#%v no task now...\n", os.Getpid())
+			if ind%10 == 0 {
+				log.Printf("worker#%v: all tasks in progress...\n", os.Getpid())
+			}
+			ind++
 		case MapTask:
 			log.Printf("worker#%v got map task#%v, file name: %v\n", os.Getpid(), task.TaskId, task.FileName)
 			_mapf(mapf, task.FileName, task.TaskId, task.NReduce)
@@ -97,7 +101,7 @@ func reportTaskDone(taskType TaskType, taskId int) {
 }
 
 //
-// process map task and send intermediate file location to coordinator
+// process map task and save intermediate files
 //
 func _mapf(mapf func(string, string) []KeyValue, fileName string, mapId int, nReduce int) {
 	file, err := os.Open(fileName)
@@ -147,6 +151,9 @@ func writeIntermediateFile(kva []KeyValue, mapId int, nReduce int) {
 	}
 }
 
+//
+// process reduce task and save output files
+//
 func _reducef(reducef func(string, []string) string, reduceId int) {
 
 	// read from files
@@ -184,7 +191,7 @@ func _reducef(reducef func(string, []string) string, reduceId int) {
 		for j < len(kva) && kva[j].Key == kva[i].Key {
 			j++
 		}
-		values := []string{}
+		values := make([]string, 0)
 		for k := i; k < j; k++ {
 			values = append(values, kva[k].Value)
 		}

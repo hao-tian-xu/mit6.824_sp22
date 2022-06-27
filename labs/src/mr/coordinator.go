@@ -60,15 +60,12 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	c.mu.Lock()
 	if c.remain[MapTask] > 0 {
 		// map tasks not all done
-		//log.Printf("%v map tasks remain...\n", c.remain[MapTask])
 		task = chooseTask(c.task[MapTask])
 	} else if c.remain[ReduceTask] > 0 {
 		// reduce tasks not all done
-		//log.Printf("%v reduce tasks remain...\n", c.remain[ReduceTask])
 		task = chooseTask(c.task[ReduceTask])
 	} else {
 		// all tasks done
-		//log.Printf("all tasks done!\n")
 		c.mu.Unlock()
 		reply.TaskType = Exit
 		return nil
@@ -76,14 +73,12 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 
 	if task.taskType == NoIdle {
 		// no idle task but some tasks in progress
-		//log.Printf("all tasks in prograss...\n")
 		c.mu.Unlock()
 		reply.TaskType = NoIdle
 		return nil
 	} else {
 		// give a task to the worker
 		task.taskState = InProgress
-		//log.Printf("task#%v-%v in progress...\n", task.taskType, task.taskId)
 		task.workerId = args.WorkerId
 		c.mu.Unlock()
 		reply.TaskType = task.taskType
@@ -130,7 +125,7 @@ func (c *Coordinator) ReportTaskDone(args *ReportTaskDoneArgs, reply *ReportTask
 	if task.taskState == InProgress {
 		task.taskState = Completed
 		c.remain[taskType] -= 1
-		log.Printf("task#%v-%v done!", task.taskType, task.taskId)
+		log.Printf("task#%v-%v done!\n", task.taskType, task.taskId)
 	} else {
 		task.taskState = Idle
 	}
@@ -168,6 +163,8 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.remain[MapTask] <= 0 && c.remain[ReduceTask] <= 0
 }
 
