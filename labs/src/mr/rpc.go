@@ -30,23 +30,23 @@ type ExampleReply struct {
 // GetTask RPC definitions
 //
 type GetTaskArgs struct {
-	workerId int
+	WorkerId int
 }
 
 type GetTaskReply struct {
-	taskType TaskType
-	taskId   int
-	fileName string
-	nReduce  int
+	TaskType TaskType
+	TaskId   int
+	FileName string
+	NReduce  int
 }
 
 //
 // ReportTaskDone RPC definitions
 //
 type ReportTaskDoneArgs struct {
-	taskType TaskType
-	taskId   int
-	workerId int
+	TaskType TaskType
+	TaskId   int
+	WorkerId int
 }
 
 type ReportTaskDoneReply struct{}

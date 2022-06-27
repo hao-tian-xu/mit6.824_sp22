@@ -3,15 +3,15 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/ioutil"
+	"log"
+	"net/rpc"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
 )
-import "log"
-import "net/rpc"
-import "hash/fnv"
 
 //
 // Map functions return a slice of KeyValue.
@@ -49,19 +49,23 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		task, ok := getTask()
 		if !ok {
-			fmt.Printf("call failed! worker exits\n")
+			log.Printf("worker#%v get task failed! worker exits...\n", os.Getpid())
 			return
 		}
-		switch task.taskType {
+		switch task.TaskType {
 		case Exit:
-			break
+			log.Printf("all tasks completed! worker#%v exits...\n", os.Getpid())
+			return
 		case NoIdle:
+			log.Printf("worker#%v no task now...\n", os.Getpid())
 		case MapTask:
-			_mapf(mapf, task.fileName, task.taskId, task.nReduce)
-			reportTaskDone(task.taskType, task.taskId)
+			log.Printf("worker#%v got map task#%v, file name: %v\n", os.Getpid(), task.TaskId, task.FileName)
+			_mapf(mapf, task.FileName, task.TaskId, task.NReduce)
+			reportTaskDone(task.TaskType, task.TaskId)
 		case ReduceTask:
-			_reducef(reducef, task.taskId)
-			reportTaskDone(task.taskType, task.taskId)
+			log.Printf("worker#%v got reduce task#%v\n", os.Getpid(), task.TaskId)
+			_reducef(reducef, task.TaskId)
+			reportTaskDone(task.TaskType, task.TaskId)
 		}
 		// task interval
 		time.Sleep(time.Millisecond * 100)
@@ -77,9 +81,6 @@ func getTask() (*GetTaskReply, bool) {
 	args := GetTaskArgs{os.Getpid()}
 	reply := GetTaskReply{}
 	ok := call("Coordinator.GetTask", &args, &reply)
-	if !ok {
-		fmt.Printf("get task failed!\n")
-	}
 	return &reply, ok
 }
 
@@ -91,7 +92,7 @@ func reportTaskDone(taskType TaskType, taskId int) {
 	reply := ReportTaskDoneReply{}
 	ok := call("Coordinator.ReportTaskDone", &args, &reply)
 	if !ok {
-		fmt.Printf("send task done falied!\n")
+		log.Printf("send task done falied!\n")
 	}
 }
 
@@ -129,7 +130,7 @@ func writeIntermediateFile(kva []KeyValue, mapId int, nReduce int) {
 	}
 	// add kv pairs to files
 	for _, kv := range kva {
-		i := ihash(kv.Key)
+		i := ihash(kv.Key) % nReduce
 		if err := encs[i].Encode(&kv); err != nil {
 			log.Fatal(err)
 		}
@@ -219,9 +220,9 @@ func CallExample() {
 	ok := call("Coordinator.Example", &args, &reply)
 	if ok {
 		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
+		log.Printf("reply.Y %v\n", reply.Y)
 	} else {
-		fmt.Printf("call failed!\n")
+		log.Printf("call failed!\n")
 	}
 }
 

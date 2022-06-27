@@ -2,20 +2,18 @@ package mr
 
 import (
 	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
 	"sync"
 	"time"
 )
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
-	sync.Mutex
-	task map[TaskType][]Task
-	//mapTask      []Task
-	//reduceTask   []Task
+	mu      sync.Mutex
+	task    map[TaskType][]*Task
 	remain  map[TaskType]int
 	nReduce int
 }
@@ -58,63 +56,64 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	// finish map tasks first, reasons:
 	// 1. no reading from remote disk
 	// 2. number of workers may not be over nReduce, thus failed map task may not have any worker to work on
-	c.Lock()
+	var task *Task
+	c.mu.Lock()
 	if c.remain[MapTask] > 0 {
 		// map tasks not all done
-		c.giveTask(args, reply, MapTask)
+		//log.Printf("%v map tasks remain...\n", c.remain[MapTask])
+		task = chooseTask(c.task[MapTask])
 	} else if c.remain[ReduceTask] > 0 {
 		// reduce tasks not all done
-		c.giveTask(args, reply, ReduceTask)
+		//log.Printf("%v reduce tasks remain...\n", c.remain[ReduceTask])
+		task = chooseTask(c.task[ReduceTask])
 	} else {
 		// all tasks done
-		c.Unlock()
-		reply.taskType = Exit
+		//log.Printf("all tasks done!\n")
+		c.mu.Unlock()
+		reply.TaskType = Exit
+		return nil
 	}
 
-	// wait for the task to be done after return
-	taskType := reply.taskType
-	taskId := reply.taskId
-	defer func() {
-		if taskType == MapTask || taskType == ReduceTask {
-			time.Sleep(time.Second * 10)
-			task := c.task[taskType][taskId]
-			c.Lock()
-			if task.taskState != Completed {
-				task.taskState = Idle
-			}
-			c.Unlock()
-		}
-	}()
-	return nil
+	if task.taskType == NoIdle {
+		// no idle task but some tasks in progress
+		//log.Printf("all tasks in prograss...\n")
+		c.mu.Unlock()
+		reply.TaskType = NoIdle
+		return nil
+	} else {
+		// give a task to the worker
+		task.taskState = InProgress
+		//log.Printf("task#%v-%v in progress...\n", task.taskType, task.taskId)
+		task.workerId = args.WorkerId
+		c.mu.Unlock()
+		reply.TaskType = task.taskType
+		reply.TaskId = task.taskId
+		reply.FileName = task.fileName
+		reply.NReduce = c.nReduce
+		// wait the task to be completed
+		go c.waitTaskDone(task)
+		return nil
+	}
 }
 
-func (c *Coordinator) giveTask(args *GetTaskArgs, reply *GetTaskReply, taskType TaskType) {
-
-	// find next idle task
-	task := Task{}
-	taskZero := task
-	for _, t := range c.task[taskType] {
-		if t.taskState == Idle {
-			task = t
-			break
+func chooseTask(tasks []*Task) *Task {
+	for _, task := range tasks {
+		if task.taskState == Idle {
+			return task
 		}
 	}
+	return &Task{taskType: NoIdle}
+}
 
-	// reply the task
-	if task != taskZero {
-		task.taskState = InProgress
-		c.Unlock()
-		task.workerId = args.workerId
-		reply.taskType = task.taskType
-		reply.taskId = task.taskId
-		reply.fileName = task.fileName
-		reply.nReduce = c.nReduce
-		return
+func (c *Coordinator) waitTaskDone(task *Task) {
+	time.Sleep(time.Second * 10)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if task.taskState != Completed {
+		log.Printf("worker#%v failed!\n", task.workerId)
+		task.taskState = Idle
+		task.workerId = NA
 	}
-
-	// no idle task but some tasks in progress
-	c.Unlock()
-	reply.taskType = NoIdle
 }
 
 //
@@ -122,17 +121,19 @@ func (c *Coordinator) giveTask(args *GetTaskArgs, reply *GetTaskReply, taskType 
 //
 func (c *Coordinator) ReportTaskDone(args *ReportTaskDoneArgs, reply *ReportTaskDoneReply) error {
 
-	taskType := args.taskType
-	task := c.task[taskType][args.taskId]
+	taskType := args.TaskType
+	task := c.task[taskType][args.TaskId]
 
 	// confirm that the task is valid, and mark it completed
-	c.Lock()
-	defer c.Unlock()
-	if task.taskState == InProgress && task.workerId == args.workerId {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if task.taskState == InProgress {
 		task.taskState = Completed
 		c.remain[taskType] -= 1
+		log.Printf("task#%v-%v done!", task.taskType, task.taskId)
+	} else {
+		task.taskState = Idle
 	}
-
 	return nil
 }
 
@@ -181,15 +182,15 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Your code here.
 	// initialize task lists
 	nMap := len(files)
-	mapTask := make([]Task, nMap)
+	mapTask := make([]*Task, nMap)
 	for i, file := range files {
-		mapTask[i] = Task{MapTask, Idle, i, file, NA}
+		mapTask[i] = &Task{MapTask, Idle, i, file, NA}
 	}
-	reduceTask := make([]Task, nReduce)
+	reduceTask := make([]*Task, nReduce)
 	for i := 0; i < nReduce; i++ {
-		reduceTask[i] = Task{ReduceTask, Idle, i, "", NA}
+		reduceTask[i] = &Task{ReduceTask, Idle, i, "", NA}
 	}
-	c.task = map[TaskType][]Task{MapTask: mapTask, ReduceTask: reduceTask}
+	c.task = map[TaskType][]*Task{MapTask: mapTask, ReduceTask: reduceTask}
 	//c.mapTask, c.reduceTask = mapTask, reduceTask
 	c.remain = map[TaskType]int{MapTask: nMap, ReduceTask: nReduce}
 	c.nReduce = nReduce
