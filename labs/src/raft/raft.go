@@ -33,13 +33,18 @@ const (
 	// heartbeats
 	HeartbeatsInterval = 100
 	// timeout
-	TimeOutMin = 400
-	TimeOutMax = 600
+	TimeOutMin = 1000
+	TimeOutMax = 1500
 	// not applicable
 	NA = -1
 	// election
 	Win = iota
 	Lost
+)
+
+const (
+	BasicLog   = false
+	VerboseLog = false
 )
 
 //
@@ -82,12 +87,12 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	// Persistent state on all servers: (Updated on stable storage before responding to RPCs)
-	currentTerm int
-	votedFor    int // needLock
-	log         []*LogEntry
+	currentTerm int         // needLock
+	votedFor    int         // needLock
+	log         []*LogEntry // needLock
 	// Volatile state on all servers:
-	commitIndex int
-	lastApplied int
+	commitIndex int // needLock
+	lastApplied int // needLock
 	// Volatile state on leaders: (Reinitialized after election)
 	nextIndex  []int
 	matchIndex []int
@@ -196,8 +201,6 @@ type RequestVoteReply struct {
 	// Your data here (2A).
 	Term        int
 	VoteGranted bool
-	// Additional
-	VoterId int
 }
 
 //
@@ -206,9 +209,20 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.Lock()
-	reply.Term = rf.currentTerm
-	reply.VoterId = rf.me
 	defer rf.Unlock()
+	rf.timeout = false
+
+	reply.Term = rf.currentTerm
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = NA
+		rf.isLeader = false
+		if BasicLog {
+			log.Printf("follower#%v in term#%v (RequestVote)\n", rf.me, rf.currentTerm)
+		}
+	}
+
 	if rf.votedFor != NA || args.Term < rf.currentTerm || (args.Term == rf.currentTerm && args.LastLogIndex < len(rf.log)) {
 		reply.VoteGranted = false
 	} else {
@@ -257,20 +271,20 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // AppendEntries RPC arguments structure
 //
 type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []*LogEntry
-	LeaderCommit int
+	Term int
+	//LeaderId     int
+	//PrevLogIndex int
+	//PrevLogTerm  int
+	//Entries      []*LogEntry
+	//LeaderCommit int
 }
 
 //
 // AppendEntries RPC reply structure
 //
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term int
+	//Success bool
 }
 
 //
@@ -279,7 +293,19 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.Lock()
 	rf.timeout = false
-	rf.Unlock()
+	reply.Term = rf.currentTerm
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = NA
+		rf.isLeader = false
+		rf.Unlock()
+		if BasicLog {
+			log.Printf("follower#%v in term#%v (AppendEntries)\n", rf.me, rf.currentTerm)
+		}
+	} else {
+		rf.Unlock()
+	}
 }
 
 //
@@ -354,13 +380,9 @@ func (rf *Raft) ticker() {
 		time.Sleep(time.Millisecond * timeout)
 		rf.Lock()
 		if rf.timeout != false {
-			if rf.votedFor == NA {
-				election := rf._requestVote()
-				if election == Win {
-					rf._lead()
-				}
-			} else {
-				rf.Unlock()
+			electionResult := rf._candidate()
+			if electionResult == Win {
+				rf._leader()
 			}
 		} else {
 			rf.Unlock()
@@ -368,49 +390,144 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) _requestVote() int {
+func (rf *Raft) _candidate() int {
+	rf.currentTerm += 1
+	if BasicLog {
+		log.Printf("candidate#%v in term#%v (_candidate)\n", rf.me, rf.currentTerm)
+	}
 	rf.votedFor = rf.me
+	rf.timeout = false
+
+	currentTerm := rf.currentTerm
+	lastLogIndex := len(rf.log)
 	rf.Unlock()
-	//var votes = struct {
-	//	sync.Mutex
-	//	n int
-	//}{n: 1}
-	votes := 1
+
+	//votes := 1
+	// parallel
+	votes := struct {
+		sync.Mutex
+		n int
+	}{n: 1}
+	done := make(chan bool)
 	for i := 0; i < rf.nPeers; i++ {
 		if i != rf.me {
-			args := &RequestVoteArgs{rf.currentTerm, rf.me, len(rf.log), rf.currentTerm}
-			reply := &RequestVoteReply{}
-			if ok := rf.sendRequestVote(i, args, reply); ok == false {
-				log.Printf("sendRequestVote failed!\n")
-			} else {
-				if reply.VoteGranted == true {
-					votes += 1
-					log.Printf("candidate#%v voted by voter#%v!\n", rf.me, reply.VoterId)
+			//args := &RequestVoteArgs{currentTerm, rf.me, lastLogIndex, currentTerm - 1}
+			//reply := &RequestVoteReply{}
+			//if ok := rf.sendRequestVote(i, args, reply); ok == false {
+			//	log.Printf("candidate#%v send RequestVote to voter#%v failed!\n", rf.me, i)
+			//} else {
+			//	if reply.Term > currentTerm {
+			//		rf.Lock()
+			//		rf.isLeader = false
+			//		rf.currentTerm = reply.Term
+			//		log.Printf("receives reply from higher term. candidate#%v becomes follower...\n", rf.me)
+			//		rf.Unlock()
+			//		return Lost
+			//	}
+			//	if reply.VoteGranted == true {
+			//		votes += 1
+			//		log.Printf("candidate#%v voted by voter#%v!\n", rf.me, i)
+			//		if votes > rf.nPeers/2 {
+			//			return Win
+			//		}
+			//	}
+			//}
+
+			// parallel
+
+			go func(i int) {
+				args := &RequestVoteArgs{currentTerm, rf.me, lastLogIndex, currentTerm - 1}
+				reply := &RequestVoteReply{}
+				if ok := rf.sendRequestVote(i, args, reply); ok == false {
+					if BasicLog && VerboseLog {
+						log.Printf("candidate#%v send RequestVote to voter#%v failed!\n", rf.me, i)
+					}
+					done <- true
+				} else {
+					if reply.Term > currentTerm {
+						rf.Lock()
+						rf.isLeader = false
+						rf.currentTerm = reply.Term
+						if BasicLog {
+							log.Printf("receives reply from higher term. candidate#%v becomes follower...\n", rf.me)
+						}
+						rf.Unlock()
+						done <- false
+					}
+					if reply.VoteGranted == true {
+						votes.Lock()
+						votes.n += 1
+						votes.Unlock()
+						if BasicLog {
+							log.Printf("candidate#%v voted by voter#%v!\n", rf.me, i)
+						}
+						done <- true
+					}
 				}
-				if votes > rf.nPeers/2 {
-					return Win
-				}
-			}
+			}(i)
+		}
+	}
+
+	// parallel
+	for i := 0; i < rf.nPeers-1; i++ {
+		flag := <-done
+		if flag == false {
+			break
+		}
+		votes.Lock()
+		if votes.n > rf.nPeers/2 {
+			votes.Unlock()
+			return Win
+		} else {
+			votes.Unlock()
 		}
 	}
 	return Lost
 }
 
-func (rf *Raft) _lead() {
+func (rf *Raft) _leader() {
 	rf.Lock()
 	rf.isLeader = true
+	currentTerm := rf.currentTerm
 	rf.Unlock()
+	if BasicLog {
+		log.Printf("candidate#%v becomes leader!\n", rf.me)
+	}
 	for rf.killed() == false {
-		time.Sleep(time.Millisecond * HeartbeatsInterval)
+		rf.Lock()
+		if rf.isLeader == false {
+			rf.Unlock()
+			if BasicLog {
+				log.Printf("leader#%v becomes follower...\n", rf.me)
+			}
+			break
+		}
+		rf.Unlock()
 		for i := 0; i < rf.nPeers; i++ {
 			if i != rf.me {
-				args := &AppendEntriesArgs{}
-				reply := &AppendEntriesReply{}
-				if ok := rf.sendAppendEntries(i, args, reply); ok == false {
-					log.Printf("sendAppendEntries failed!\n")
-				}
+				// parallel
+				go func(i int) {
+					args := &AppendEntriesArgs{currentTerm}
+					reply := &AppendEntriesReply{}
+					if ok := rf.sendAppendEntries(i, args, reply); ok == false {
+						if BasicLog && VerboseLog {
+							log.Printf("leader#%v send AppendEntries to follower#%v failed!\n", rf.me, i)
+						}
+					} else {
+						if reply.Term > currentTerm {
+							rf.Lock()
+							rf.isLeader = false
+							rf.currentTerm = reply.Term
+							if BasicLog {
+								log.Printf("receives reply from higher term. leader#%v becomes follower...\n", rf.me)
+							}
+							rf.Unlock()
+						}
+					}
+				}(i)
 			}
 		}
+		time.Sleep(time.Millisecond * HeartbeatsInterval)
 	}
 }
 
