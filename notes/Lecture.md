@@ -194,6 +194,15 @@
     - Go RPC is a simple form of "at-most-once"
 
 
+### *Thinking*
+
+- 简要介绍了Go的一些并行计算的特征
+- 通过Web Crawler对比了state lock模型和channel模型的区别
+  - 如果是状态的改变使用lock
+  - 如果是等待和通知使用channel
+- 笔记中详细介绍了RPC，是分布式系统的一个关键机制，
+  - 易于编程的客户/服务器通信、隐藏网络协议的细节、将数据（字符串、数组、map等）转换成 "wire format"
+  - Go本身有实现RPC的package
 
 # L3. The Google File System
 
@@ -258,21 +267,101 @@
 
 
 
+# L4. Primary-Backup Replication
+
+### Failures
+
+- yes: fail-stop failures
+- no: logic bugs, configuration errors, malicious
+- maybe: earthquake...
+
+### Challenges
+
+- has primary failed?
+  - split-brain system
+- keep primary and backup in sync
+  - apply changes in order
+  - deal with non-determinism
+- fail over
+
+### Two Approaches
+
+1. State transfer
+   - disadvantage: if a operation generates many states, it's expensive to send many data
+2. Replicate state machine (RSM)
+
+### Level of operations to replicate
+
+- application-level operations (file append, write)
+- machine level
+  - transparent!
+  - virtual machines
+
+## VMFT: exploit virtualization
+
+- transparent replication
+- appears to client that server is a single machine
+- VMware product
+
+### Overview
+
+- killover
+
+### Goal: behave like a single machine
+
+- divergence source
+  - non-deterministic instruction
+  - input packets
+  - timer interrupts
+  - multicore -> disallow
+
+### Interrupts
+
+- ++*<u>question</u>*: deterministic instructions are not sent throught the logging channel
+
+### Output Rule
+
+- backup acknowledgment
 
 
 
+# L5. Fault Tolerance: Raft (1)
 
+### Pattern: single point of failure
 
+- MR replicates computation but relies on a single master to organize
+* GFS replicates data but relies on the master to pick primaries
+- VMware FT replicates service but relies on test-and-set to pick primary
+- -> all rely on a single entity to make critical decisions to avoid split brain
 
+### Idea: test-and-set server replication
 
+- problem: split brain
 
+### Network partition: majority rule
 
+- overlap in majorities
 
+### Protocols using Quorum
 
+- around 1990
+  - Paxos
+  - View-stamped replication
+- Raft (2014)
 
+## Raft Overview
 
+### Election
 
+- split vote
+  - random timeout
+- votes are written in disk (one vote per term -> one leader per term)
 
+### Logs may diverge
+
+### Lab
+
+- all things in figure 2 should be implemented
 
 
 

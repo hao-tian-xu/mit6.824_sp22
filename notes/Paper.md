@@ -134,25 +134,75 @@
 
 
 
+# The Design of a Practical System for Fault-Tolerant Virtual Machines
+
+1. **INTRODUCTION**
+2. **BASIC FT DESIGN**
+   1. Deterministic Replay Implementation
+   2. FT Protocal
+   3. Detecting and Responding to Failure
+3. **PRACTICAL IMPLEMENTATION OF FT**
+   1. Starting and Restarting FT VMs
+   2. Managing the Logging Channel
+   3. Operations on FT VMS
+   4. Implementation Issues for Disk IOs
+   5. Implementation Issues for Network IO
+4. **DESIGN ALTERNATIVES**
+   1. Shared vs. Non-shared Disk
+   2. Executing Disk Reads on the Backup VM
+5. **PERFORMANCE EVALUATION**
+   1. Basic Performance Results
+   2. Network Benchmarks
+6. **RELATED WORK**
+7. **CONCLUSION AND FUTURE WORK**
+
+### *Thinking*
+
+- 介绍了VMware开发的一个基于虚拟机的容错（fault-tolerant）系统
+  - 核心是传输一系列的决定性的指令，而非数据
+    - 非决定性指令转化为决定性的指令（基于虚拟机）
+  - 一些设计决定的讨论
+    - 硬盘读操作传输数据
+    - 使用同一个共享文件系统
 
 
 
+# In Search of an Understandable Consensus Algorithm (Extended Version)
 
+1. **Introduction**
+   - understandability: decomposition and state space reduction
+2. **Replicated state machines**
+   - consensus algorithm: keep the replicated log consistent
+3. **What's wrong with Pxos**
+4. **Designing for understandability**
+5. **The Raft concensus algorithm**
+   1. Raft basics
+   2. Leader election
+      - understandability -> randomized retry than a ranking system (subtle corner cases)
+   3. Log replication
+   4. Safety
+      1. Election restriction
+      2. Committing entries from previous terms
+         - To eliminate problems like the one in Figure 8, Raft never commits log entries from previous terms by count- ing replicas.
+      3. Safety argument
+   5. Follower and candidate crashes
+   6. Timing and availability
+6. **Cluster membership changes**
+7. **Log compaction**
+8. **Client interaction**
+9. **Implementation and evaluation**
+   1. Understandability
+   2. Correctness
+   3. Performance
+10. **Related work**
+11. **Conclusion**
 
+## *Thinking1 (to section 5)* 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+- 这篇论文介绍了一个共识算法Raft
+  - 主要机制是Majority Election，保证了一个commited log entry出现在未来的所有leader的log中，因此保证了所有server的state machine所应用的同一编号的log entry所包含的内容是相同的，即state machine safety
+  - Raft一个关键的设计特征是可理解性，因此在关键的leader election的过程中，在一次选举失败后，采用了随机重试的方法（避免各种corner case）
+    - 随机和概率（当代性）替代了确定性
 
 
 
