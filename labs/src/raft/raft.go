@@ -18,34 +18,68 @@ package raft
 //
 
 import (
+	"6.824/labrpc"
+	"fmt"
 	"log"
 	"math/rand"
-	//	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	//	"6.824/labgob"
-	"6.824/labrpc"
 )
 
+// GENERAL CONSTANT
+
 const (
-	// heartbeats
-	HeartbeatsInterval = 100
-	// timeout
-	TimeOutMin = 1000
-	TimeOutMax = 1500
+
 	// not applicable
 	NA = -1
+
+	// heartbeats
+	HeartbeatsInterval = 100
+
+	// timeout
+	TimeoutMin = 1000
+	TimeoutMax = 1500
+
 	// election
 	Win = iota
 	Lost
 )
 
+// LOG CONFIGURATION
+
 const (
-	BasicLog   = false
-	VerboseLog = false
+
+	// verbosity setting
+	VERBOSE = LogBasic
+
+	// verbosity level
+	LogBasic   LogVerbosity = 1
+	LogVerbose LogVerbosity = 2
+
+	// topic
+	dClient LogTopic = "CLNT"
+	dLeader LogTopic = "LEAD"
+	dTerm   LogTopic = "TERM"
+	dError  LogTopic = "ERRO"
+	dTemp   LogTopic = "TEMP"
 )
+
+type LogVerbosity int
+type LogTopic string
+
+//
+// custom log function
+//
+func raftLog(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
+	if VERBOSE >= verbosity {
+		prefix := fmt.Sprintf("%v S%02d", string(topic), peerId)
+		format = prefix + format
+		log.Printf(format, a...)
+	}
+}
+
+// 2A UNUSED
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -107,6 +141,8 @@ type LogEntry struct {
 	Command []byte
 }
 
+// GET STATE
+
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -120,6 +156,8 @@ func (rf *Raft) GetState() (int, bool) {
 	isleader = rf.isLeader
 	return term, isleader
 }
+
+// 2A UNUSED
 
 //
 // save Raft's persistent state to stable storage,
@@ -218,9 +256,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.votedFor = NA
 		rf.isLeader = false
-		if BasicLog {
-			log.Printf("follower#%v in term#%v (RequestVote)\n", rf.me, rf.currentTerm)
-		}
+		raftLog(LogBasic, dTerm, rf.me, "follower in term#%v (RequestVote)\n", rf.currentTerm)
 	}
 
 	if rf.votedFor != NA || args.Term < rf.currentTerm || (args.Term == rf.currentTerm && args.LastLogIndex < len(rf.log)) {
@@ -300,9 +336,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.votedFor = NA
 		rf.isLeader = false
 		rf.Unlock()
-		if BasicLog {
-			log.Printf("follower#%v in term#%v (AppendEntries)\n", rf.me, rf.currentTerm)
-		}
+		raftLog(LogBasic, dTerm, rf.me, "follower in term#%v (AppendEntries)\n", rf.currentTerm)
 	} else {
 		rf.Unlock()
 	}
@@ -363,7 +397,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// TICKER
+// TICKER AND ROLE HANDLER
 
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
@@ -376,8 +410,8 @@ func (rf *Raft) ticker() {
 		rf.Lock()
 		rf.timeout = true
 		rf.Unlock()
-		timeout := time.Duration(TimeOutMin + rand.Intn(TimeOutMax-TimeOutMin))
-		time.Sleep(time.Millisecond * timeout)
+		randomTimeout := time.Duration(TimeoutMin + rand.Intn(TimeoutMax-TimeoutMin))
+		time.Sleep(time.Millisecond * randomTimeout)
 		rf.Lock()
 		if rf.timeout != false {
 			electionResult := rf._candidate()
@@ -392,9 +426,7 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) _candidate() int {
 	rf.currentTerm += 1
-	if BasicLog {
-		log.Printf("candidate#%v in term#%v (_candidate)\n", rf.me, rf.currentTerm)
-	}
+	raftLog(LogBasic, dTerm, rf.me, "candidate in term#%v (_candidate)\n", rf.currentTerm)
 	rf.votedFor = rf.me
 	rf.timeout = false
 
@@ -411,46 +443,20 @@ func (rf *Raft) _candidate() int {
 	done := make(chan bool)
 	for i := 0; i < rf.nPeers; i++ {
 		if i != rf.me {
-			//args := &RequestVoteArgs{currentTerm, rf.me, lastLogIndex, currentTerm - 1}
-			//reply := &RequestVoteReply{}
-			//if ok := rf.sendRequestVote(i, args, reply); ok == false {
-			//	log.Printf("candidate#%v send RequestVote to voter#%v failed!\n", rf.me, i)
-			//} else {
-			//	if reply.Term > currentTerm {
-			//		rf.Lock()
-			//		rf.isLeader = false
-			//		rf.currentTerm = reply.Term
-			//		log.Printf("receives reply from higher term. candidate#%v becomes follower...\n", rf.me)
-			//		rf.Unlock()
-			//		return Lost
-			//	}
-			//	if reply.VoteGranted == true {
-			//		votes += 1
-			//		log.Printf("candidate#%v voted by voter#%v!\n", rf.me, i)
-			//		if votes > rf.nPeers/2 {
-			//			return Win
-			//		}
-			//	}
-			//}
 
 			// parallel
-
 			go func(i int) {
 				args := &RequestVoteArgs{currentTerm, rf.me, lastLogIndex, currentTerm - 1}
 				reply := &RequestVoteReply{}
 				if ok := rf.sendRequestVote(i, args, reply); ok == false {
-					if BasicLog && VerboseLog {
-						log.Printf("candidate#%v send RequestVote to voter#%v failed!\n", rf.me, i)
-					}
+					raftLog(LogVerbose, dError, rf.me, "candidate send RequestVote to voter#%v failed!\n", i)
 					done <- true
 				} else {
 					if reply.Term > currentTerm {
 						rf.Lock()
 						rf.isLeader = false
 						rf.currentTerm = reply.Term
-						if BasicLog {
-							log.Printf("receives reply from higher term. candidate#%v becomes follower...\n", rf.me)
-						}
+						raftLog(LogBasic, dTemp, rf.me, "candidate receives reply from higher term, and becomes follower...\n")
 						rf.Unlock()
 						done <- false
 					}
@@ -458,9 +464,7 @@ func (rf *Raft) _candidate() int {
 						votes.Lock()
 						votes.n += 1
 						votes.Unlock()
-						if BasicLog {
-							log.Printf("candidate#%v voted by voter#%v!\n", rf.me, i)
-						}
+						raftLog(LogBasic, dVote, rf.me, "candidate voted by voter#%v!\n", i)
 						done <- true
 					}
 				}
@@ -490,16 +494,12 @@ func (rf *Raft) _leader() {
 	rf.isLeader = true
 	currentTerm := rf.currentTerm
 	rf.Unlock()
-	if BasicLog {
-		log.Printf("candidate#%v becomes leader!\n", rf.me)
-	}
+	raftLog(LogBasic, dLeader, rf.me, "candidate becomes leader!\n")
 	for rf.killed() == false {
 		rf.Lock()
 		if rf.isLeader == false {
 			rf.Unlock()
-			if BasicLog {
-				log.Printf("leader#%v becomes follower...\n", rf.me)
-			}
+			raftLog(LogBasic, dTemp, rf.me, "leader becomes follower...\n")
 			break
 		}
 		rf.Unlock()
@@ -510,17 +510,13 @@ func (rf *Raft) _leader() {
 					args := &AppendEntriesArgs{currentTerm}
 					reply := &AppendEntriesReply{}
 					if ok := rf.sendAppendEntries(i, args, reply); ok == false {
-						if BasicLog && VerboseLog {
-							log.Printf("leader#%v send AppendEntries to follower#%v failed!\n", rf.me, i)
-						}
+						raftLog(LogVerbose, dError, rf.me, "leader#%v send AppendEntries to follower#%v failed!\n", i)
 					} else {
 						if reply.Term > currentTerm {
 							rf.Lock()
 							rf.isLeader = false
 							rf.currentTerm = reply.Term
-							if BasicLog {
-								log.Printf("receives reply from higher term. leader#%v becomes follower...\n", rf.me)
-							}
+							raftLog(LogBasic, dTemp, rf.me, "leader receives reply from higher term, and becomes follower...\n")
 							rf.Unlock()
 						}
 					}
