@@ -197,12 +197,58 @@
 10. **Related work**
 11. **Conclusion**
 
-## *Thinking1 (to section 5)* 
+## *Thinking-1 (to section 5)*
 
 - 这篇论文介绍了一个共识算法Raft
   - 主要机制是Majority Election，保证了一个commited log entry出现在未来的所有leader的log中，因此保证了所有server的state machine所应用的同一编号的log entry所包含的内容是相同的，即state machine safety
   - Raft一个关键的设计特征是可理解性，因此在关键的leader election的过程中，在一次选举失败后，采用了随机重试的方法（避免各种corner case）
     - 随机和概率（当代性）替代了确定性
+
+
+
+# Debugging by Pretty Printing
+
+## Debugging distributed code hits different
+
+- In the Raft labs there are 
+  - N raft peers executing in parallel as if they were in separate machines. For each one of these peers there will be 
+    - multiple goroutines executing in parallel (commonly one or two timers, an applier and some amount of RPC and RPC reply handlers), leading to **large amounts of concurrency**.
+- Moreover, in a system like Raft not only there are multiple threads printing output at once, but they will be 
+  - printing about very heterogeneous events such as: timer resets, log operations, elections, crash recovery or communication with the replicated state machine. 
+  - Crucially, different types of events will occur with different frequencies, which can lead to **overly verbose logs if they are not trimmed in some way**.
+- Therefore, we would ideally like to know **who** is printing each line and **what topic** the message is related to.
+  - We will make Go print a boring log with a specific format and then make use of the [Rich](https://github.com/willmcgugan/rich) Python library to abstract away the ugly complexity of printing beautifully formatted terminal output.
+
+### The Go side
+
+- **Toggling the output verbosity**
+- **Logging with topics**
+  - The topics relate to different parts of the implementation, and by making them fine grained we will able <u>to filter, search and even highlight them with different colors</u>.
+- **The print function**
+
+### Prettifying the Logs
+
+- [Rich](https://github.com/willmcgugan/rich) and [Typer](https://github.com/tiangolo/typer)
+- pager strategy: `tmux`
+
+### Capturing Rare Failures
+
+- Ideally we would like a script that does the following:
+  - Executes N runs of a series of tests
+  - Saves failed runs for later inspection
+  - Runs tests in parallel.
+    - it also sometimes helps by introducing more concurrency, leading to rare interleavings to happen more frequently.
+
+## *Thinking*
+
+- 设置log的格式，并通过parser将其打印为所需的样式
+  - 将log.Printf嵌入到一个函数内扩展其功能，而不是将该功能写无数遍
+
+
+
+
+
+
 
 
 
