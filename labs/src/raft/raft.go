@@ -18,51 +18,43 @@ package raft
 //
 
 import (
-	"6.824/labrpc"
 	"fmt"
 	"log"
 	"math/rand"
+	"time"
+
+	//	"bytes"
 	"sync"
 	"sync/atomic"
-	"time"
+
+	//	"6.824/labgob"
+	"6.824/labrpc"
 )
 
 // GENERAL CONSTANT
 
 const (
-
 	// not applicable
 	NA = -1
-
-	// heartbeats
-	HeartbeatsInterval = 100
-
-	// timeout
-	TimeoutMin = 1000
-	TimeoutMax = 1500
-
-	// election
-	Win = iota
-	Lost
 )
 
 // LOG CONFIGURATION
 
 const (
-
 	// verbosity setting
 	VERBOSE = LogBasic
 
 	// verbosity level
+	LogNone    LogVerbosity = 0
 	LogBasic   LogVerbosity = 1
 	LogVerbose LogVerbosity = 2
 
 	// topic
-	dClient LogTopic = "CLNT"
 	dLeader LogTopic = "LEAD"
 	dTerm   LogTopic = "TERM"
 	dError  LogTopic = "ERRO"
 	dTemp   LogTopic = "TEMP"
+	dVote   LogTopic = "VOTE"
 )
 
 type LogVerbosity int
@@ -73,7 +65,7 @@ type LogTopic string
 //
 func raftLog(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
 	if VERBOSE >= verbosity {
-		prefix := fmt.Sprintf("%v S%02d", string(topic), peerId)
+		prefix := fmt.Sprintf("%v S%02d ", string(topic), peerId)
 		format = prefix + format
 		log.Printf(format, a...)
 	}
@@ -131,14 +123,41 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 	// Additional
-	nPeers   int
-	timeout  bool // needLock
-	isLeader bool // needLock
+	nPeers       int
+	timeoutStart time.Time // needLock
+	role         raftRole  // needLock
+	lastLogIndex int       // needLock
+	lastLogTerm  int       // needLock
+
+	//isLeader     bool      // needLock
 }
 
 type LogEntry struct {
 	Term    int
 	Command []byte
+}
+
+type raftRole int
+
+const (
+	Leader = iota
+	Candidate
+	Follower
+)
+
+// TIMEOUT
+
+const (
+	// heartbeats
+	HeartbeatsInterval = 100
+
+	// timeout
+	TimeoutMin = 1000
+	TimeoutMax = 1500
+)
+
+func randomTimeout() time.Duration {
+	return time.Millisecond * time.Duration(TimeoutMin+rand.Intn(TimeoutMax-TimeoutMin))
 }
 
 // GET STATE
@@ -153,7 +172,8 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.Lock()
 	defer rf.Unlock()
 	term = rf.currentTerm
-	isleader = rf.isLeader
+	isleader = rf.role == Leader
+
 	return term, isleader
 }
 
@@ -220,8 +240,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // REQUEST VOTE RPC
 
 //
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
+// RequestVote RPC arguments structure.
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
@@ -232,8 +251,7 @@ type RequestVoteArgs struct {
 }
 
 //
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
+// RequestVote RPC reply structure.
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
@@ -242,28 +260,37 @@ type RequestVoteReply struct {
 }
 
 //
-// example RequestVote RPC handler.
+// RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.Lock()
 	defer rf.Unlock()
-	rf.timeout = false
 
-	reply.Term = rf.currentTerm
-
+	// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = NA
-		rf.isLeader = false
-		raftLog(LogBasic, dTerm, rf.me, "follower in term#%v (RequestVote)\n", rf.currentTerm)
+		rf.role = Follower
+		go raftLog(LogBasic, dTerm, rf.me, "follower in term#%v (RequestVote)\n", rf.currentTerm)
 	}
 
-	if rf.votedFor != NA || args.Term < rf.currentTerm || (args.Term == rf.currentTerm && args.LastLogIndex < len(rf.log)) {
-		reply.VoteGranted = false
-	} else {
+	reply.Term = rf.currentTerm
+
+	// Reply false if term < currentTerm
+	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
+	// TODO: read the paper to verify
+	if args.Term >= rf.currentTerm &&
+		(rf.votedFor == NA || rf.votedFor == args.CandidateId) &&
+		(args.LastLogTerm >= rf.lastLogTerm && args.LastLogIndex >= rf.lastLogIndex) {
+
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
+
+		// Followers: reset election timeout if granting vote to candidate
+		rf.timeoutStart = time.Now()
+	} else {
+		reply.VoteGranted = false
 	}
 }
 
@@ -296,9 +323,43 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+//func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+//	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+//	return ok
+//}
+
+//
+// send a RequestVote RPC to a server and process the reply
+//
+func (rf *Raft) sendRequestVote(server int, term int, lastLogIndex int, lastLogTerm int, voteCounter *chan int) {
+
+	args := &RequestVoteArgs{term, rf.me, lastLogIndex, lastLogTerm}
+	reply := &RequestVoteReply{}
+
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+
+	if !ok {
+		go raftLog(LogVerbose, dError, rf.me, "candidate send RequestVote to voter#%v failed!\n", server)
+	} else {
+		if reply.VoteGranted == true {
+			*voteCounter <- 1
+
+			go raftLog(LogBasic, dVote, rf.me, "candidate voted by voter#%v!\n", server)
+		} else {
+			// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
+			if reply.Term > term {
+				rf.Lock()
+				rf.currentTerm = reply.Term
+				rf.role = Follower
+				rf.Unlock()
+
+				go raftLog(LogBasic, dTemp, rf.me, "candidate receives reply from higher term, and becomes follower...\n")
+			}
+
+			*voteCounter <- 0
+		}
+
+	}
 }
 
 // APPEND ENTRIES RPC
@@ -319,8 +380,8 @@ type AppendEntriesArgs struct {
 // AppendEntries RPC reply structure
 //
 type AppendEntriesReply struct {
-	Term int
-	//Success bool
+	Term    int
+	Success bool
 }
 
 //
@@ -328,26 +389,55 @@ type AppendEntriesReply struct {
 //
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.Lock()
-	rf.timeout = false
+	defer rf.Unlock()
+
 	reply.Term = rf.currentTerm
 
+	// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = NA
-		rf.isLeader = false
-		rf.Unlock()
-		raftLog(LogBasic, dTerm, rf.me, "follower in term#%v (AppendEntries)\n", rf.currentTerm)
-	} else {
-		rf.Unlock()
+		rf.role = Follower
+		go raftLog(LogBasic, dTerm, rf.me, "follower in term#%v (AppendEntries)\n", rf.currentTerm)
 	}
+
+	// Reply false if term < currentTerm
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+	} else {
+		reply.Success = true
+
+		// Followers: reset election timeout if receiving AppendEntries RPC from current leader
+		rf.timeoutStart = time.Now()
+	}
+
 }
 
 //
 // send a AppendEntries RPC to a server
 //
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+func (rf *Raft) sendAppendEntries(server int, currentTerm int) {
+	args := &AppendEntriesArgs{currentTerm}
+	reply := &AppendEntriesReply{}
+
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
+
+	if !ok {
+		go raftLog(LogVerbose, dError, rf.me, "leader send AppendEntries to follower#%v failed!\n", server)
+	} else {
+		// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
+		if !reply.Success {
+			if reply.Term > currentTerm {
+				rf.Lock()
+				rf.currentTerm = args.Term
+				rf.votedFor = NA
+				rf.role = Follower
+				rf.Unlock()
+
+				go raftLog(LogBasic, dTemp, rf.me, "leader receives reply from higher term, and becomes follower...\n")
+			}
+		}
+	}
 }
 
 // 2A UNUSED
@@ -407,120 +497,95 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
+		randomTimeout := randomTimeout()
+		time.Sleep(randomTimeout)
+
 		rf.Lock()
-		rf.timeout = true
+		timeout := time.Now().Sub(rf.timeoutStart)
+		role := rf.role
 		rf.Unlock()
-		randomTimeout := time.Duration(TimeoutMin + rand.Intn(TimeoutMax-TimeoutMin))
-		time.Sleep(time.Millisecond * randomTimeout)
-		rf.Lock()
-		if rf.timeout != false {
-			electionResult := rf._candidate()
-			if electionResult == Win {
-				rf._leader()
-			}
-		} else {
-			rf.Unlock()
+		if role == Follower && timeout > randomTimeout {
+			go rf.candidate()
 		}
 	}
 }
 
-func (rf *Raft) _candidate() int {
-	rf.currentTerm += 1
-	raftLog(LogBasic, dTerm, rf.me, "candidate in term#%v (_candidate)\n", rf.currentTerm)
-	rf.votedFor = rf.me
-	rf.timeout = false
+func (rf *Raft) candidate() {
+	// On conversion to candidate, start election
+	rf.Lock()
 
-	currentTerm := rf.currentTerm
-	lastLogIndex := len(rf.log)
+	rf.role = Candidate
+	rf.currentTerm += 1
+	go raftLog(LogBasic, dTerm, rf.me, "candidate in term#%v (candidate)\n", rf.currentTerm)
+	rf.votedFor = rf.me
+	rf.timeoutStart = time.Now()
+
+	// Prepare for RequestVote
+	term := rf.currentTerm
+	lastLogIndex := rf.lastLogIndex
+	lastLogTerm := term - 1 // TODO: maybe wrong
+
 	rf.Unlock()
 
-	//votes := 1
-	// parallel
-	votes := struct {
-		sync.Mutex
-		n int
-	}{n: 1}
-	done := make(chan bool)
+	// Send RequestVote RPCs to all other servers
+	voteCounter := make(chan int)
 	for i := 0; i < rf.nPeers; i++ {
 		if i != rf.me {
-
-			// parallel
-			go func(i int) {
-				args := &RequestVoteArgs{currentTerm, rf.me, lastLogIndex, currentTerm - 1}
-				reply := &RequestVoteReply{}
-				if ok := rf.sendRequestVote(i, args, reply); ok == false {
-					raftLog(LogVerbose, dError, rf.me, "candidate send RequestVote to voter#%v failed!\n", i)
-					done <- true
-				} else {
-					if reply.Term > currentTerm {
-						rf.Lock()
-						rf.isLeader = false
-						rf.currentTerm = reply.Term
-						raftLog(LogBasic, dTemp, rf.me, "candidate receives reply from higher term, and becomes follower...\n")
-						rf.Unlock()
-						done <- false
-					}
-					if reply.VoteGranted == true {
-						votes.Lock()
-						votes.n += 1
-						votes.Unlock()
-						raftLog(LogBasic, dVote, rf.me, "candidate voted by voter#%v!\n", i)
-						done <- true
-					}
-				}
-			}(i)
+			go rf.sendRequestVote(i, term, lastLogIndex, lastLogTerm, &voteCounter)
 		}
 	}
 
-	// parallel
+	// Wait for votes
+	nVotes := 1
+	randomTimeout := randomTimeout()
 	for i := 0; i < rf.nPeers-1; i++ {
-		flag := <-done
-		if flag == false {
+		rf.Lock()
+		role := rf.role
+		timeout := time.Now().Sub(rf.timeoutStart)
+		rf.Unlock()
+
+		// If AppendEntries RPC received from new leader: convert to follower
+		if role == Follower {
 			break
 		}
-		votes.Lock()
-		if votes.n > rf.nPeers/2 {
-			votes.Unlock()
-			return Win
-		} else {
-			votes.Unlock()
+
+		// If election timeout elapses: start new election
+		if timeout > randomTimeout {
+			go rf.candidate()
+			break
+		}
+
+		// If votes received from majority of servers: become leader
+		nVotes += <-voteCounter
+		if nVotes > rf.nPeers/2 {
+			go rf.leader()
+			break
 		}
 	}
-	return Lost
 }
 
-func (rf *Raft) _leader() {
+func (rf *Raft) leader() {
 	rf.Lock()
-	rf.isLeader = true
+	rf.role = Leader
 	currentTerm := rf.currentTerm
 	rf.Unlock()
-	raftLog(LogBasic, dLeader, rf.me, "candidate becomes leader!\n")
+	go raftLog(LogBasic, dLeader, rf.me, "candidate becomes leader!\n")
+
 	for rf.killed() == false {
+
+		// not leader
 		rf.Lock()
-		if rf.isLeader == false {
-			rf.Unlock()
-			raftLog(LogBasic, dTemp, rf.me, "leader becomes follower...\n")
+		role := rf.role
+		rf.Unlock()
+		if role != Leader {
+			go raftLog(LogBasic, dTemp, rf.me, "leader becomes follower...\n")
 			break
 		}
-		rf.Unlock()
+
+		//
 		for i := 0; i < rf.nPeers; i++ {
 			if i != rf.me {
-				// parallel
-				go func(i int) {
-					args := &AppendEntriesArgs{currentTerm}
-					reply := &AppendEntriesReply{}
-					if ok := rf.sendAppendEntries(i, args, reply); ok == false {
-						raftLog(LogVerbose, dError, rf.me, "leader#%v send AppendEntries to follower#%v failed!\n", i)
-					} else {
-						if reply.Term > currentTerm {
-							rf.Lock()
-							rf.isLeader = false
-							rf.currentTerm = reply.Term
-							raftLog(LogBasic, dTemp, rf.me, "leader receives reply from higher term, and becomes follower...\n")
-							rf.Unlock()
-						}
-					}
-				}(i)
+				go rf.sendAppendEntries(i, currentTerm)
 			}
 		}
 		time.Sleep(time.Millisecond * HeartbeatsInterval)
@@ -561,8 +626,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, nPeers)
 
 	rf.nPeers = nPeers
-	rf.timeout = true
-	rf.isLeader = false
+	rf.timeoutStart = time.Now()
+	rf.role = Follower
+	rf.lastLogIndex = 0
+	rf.lastLogTerm = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

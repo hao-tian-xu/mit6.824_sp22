@@ -110,8 +110,8 @@ Posted on Mar 16, 2016
     - Experience suggests that for Raft it is most straightforward to use *<u>shared data and locks</u>*.
 - A Raft instance has 
   - two time-driven activities: 
-    - the leader must send heart-beats, and 
-    - others must start an election if too much time has passed since hearing from the leader. 
+    - <u>*the leader must send heart-beats*</u>, and 
+    - <u>*others must start an election if*</u> too much time has passed since hearing from the leader. 
   - It's probably best *<u>to drive each of these activities with a dedicated long-running goroutine</u>*, rather than combining multiple activities into a single goroutine.
 - <u>*The management of the election timeout*</u> is a common source of headaches. 
   - Perhaps <u>*the simplest plan*</u> is to 
