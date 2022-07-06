@@ -39,7 +39,7 @@ const NA = -1
 
 const (
 	// verbosity setting
-	VERBOSE = LogNone
+	VERBOSE = LogBasic
 
 	// verbosity level
 	LogNone    LogVerbosity = 0
@@ -47,11 +47,11 @@ const (
 	LogVerbose LogVerbosity = 2
 
 	// topic
-	dLeader LogTopic = "LEAD"
-	dTerm   LogTopic = "TERM"
-	dError  LogTopic = "ERRO"
-	dTemp   LogTopic = "TEMP"
-	dVote   LogTopic = "VOTE"
+	dLeader   LogTopic = "LEAD"
+	dTerm     LogTopic = "TERM"
+	dError    LogTopic = "ERRO"
+	dDemotion LogTopic = "DEMO"
+	dVote     LogTopic = "VOTE"
 )
 
 type (
@@ -64,11 +64,9 @@ type (
 //
 func raftLog(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
 	if VERBOSE >= verbosity {
-		go func() {
-			prefix := fmt.Sprintf("%v S%02d ", string(topic), peerId)
-			format = prefix + format
-			log.Printf(format, a...)
-		}()
+		prefix := fmt.Sprintf("%v S%02d ", string(topic), peerId)
+		format = prefix + format
+		log.Printf(format, a...)
 	}
 }
 
@@ -257,6 +255,9 @@ type RequestVoteReply struct {
 	// Your data here (2A).
 	Term        int
 	VoteGranted bool
+
+	// Additional
+	VoterId int
 }
 
 //
@@ -273,10 +274,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = NA
 		rf.role = Follower
 
-		raftLog(LogBasic, dTerm, rf.me, "follower in term#%v (RequestVote)\n", rf.currentTerm)
+		raftLog(LogBasic, dTerm, rf.me, "F in T%v (RequestVote)/C%v\n", rf.currentTerm, args.CandidateId)
 	}
 
 	reply.Term = rf.currentTerm
+
+	reply.VoterId = rf.me
 
 	// Reply false if term < currentTerm
 	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
@@ -304,27 +307,28 @@ func (rf *Raft) sendRequestVote(server int, term int, lastLogIndex int, lastLogT
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 
 	if !ok {
-		raftLog(LogVerbose, dError, rf.me, "candidate send RequestVote to voter#%v failed!\n", server)
+		raftLog(LogVerbose, dError, rf.me, "C send RequestVote to V#%v failed!\n", server)
 	} else {
 		if reply.VoteGranted == true {
 			voteCounter.Lock()
 			voteCounter.n += 1
 			voteCounter.Unlock()
 
-			raftLog(LogBasic, dVote, rf.me, "candidate voted by voter#%v!\n", server)
+			raftLog(LogBasic, dVote, rf.me, "C votedBy V%v! (sendRequestVote)\n", server)
 		} else {
 			// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
-			if reply.Term > term {
-				rf.Lock()
+			rf.Lock()
+			if reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
 				rf.votedFor = NA
 				rf.role = Follower
 				rf.Unlock()
 
-				raftLog(LogBasic, dTemp, rf.me, "candidate receives reply from higher term, and becomes follower...\n")
+				raftLog(LogBasic, dTerm, rf.me, "C->F in T%v/S%v (sendRequestVote)\n", reply.Term, reply.VoterId)
+			} else {
+				rf.Unlock()
 			}
 		}
-
 	}
 }
 
@@ -334,8 +338,8 @@ func (rf *Raft) sendRequestVote(server int, term int, lastLogIndex int, lastLogT
 // AppendEntries RPC arguments structure
 //
 type AppendEntriesArgs struct {
-	Term int
-	//LeaderId     int
+	Term     int
+	LeaderId int
 	//PrevLogIndex int
 	//PrevLogTerm  int
 	//Entries      []*LogEntry
@@ -348,6 +352,9 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	// Additional
+	ReceiverId int
 }
 
 //
@@ -359,9 +366,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 
+	reply.ReceiverId = rf.me
+
 	// If AppendEntries RPC received from new leader: convert to follower
 	if rf.role == Candidate && rf.currentTerm <= args.Term {
 		rf.role = Follower
+
+		raftLog(LogBasic, dDemotion, rf.me, "C -> F.. (AppendEntries)/L%v\n", args.LeaderId)
 	}
 
 	// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
@@ -370,7 +381,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.votedFor = NA
 		rf.role = Follower
 
-		raftLog(LogBasic, dTerm, rf.me, "follower in term#%v (AppendEntries)\n", rf.currentTerm)
+		raftLog(LogBasic, dTerm, rf.me, "F in T%v (AppendEntries)/L%v\n", rf.currentTerm, args.LeaderId)
 	}
 
 	// Reply false if term < currentTerm
@@ -389,24 +400,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // send a AppendEntries RPC to a server and process the reply
 //
 func (rf *Raft) sendAppendEntries(server int, currentTerm int) {
-	args := &AppendEntriesArgs{currentTerm}
+	args := &AppendEntriesArgs{currentTerm, rf.me}
 	reply := &AppendEntriesReply{}
 
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 
 	if !ok {
-		raftLog(LogVerbose, dError, rf.me, "leader send AppendEntries to follower#%v failed!\n", server)
+		raftLog(LogVerbose, dError, rf.me, "L send AppendEntries to F%v failed!\n", server)
 	} else {
 		// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 		if !reply.Success {
-			if reply.Term > currentTerm {
-				rf.Lock()
-				rf.currentTerm = args.Term
+			rf.Lock()
+			if reply.Term > rf.currentTerm {
+				rf.currentTerm = reply.Term
 				rf.votedFor = NA
 				rf.role = Follower
 				rf.Unlock()
 
-				raftLog(LogBasic, dTemp, rf.me, "leader receives reply from higher term, and becomes follower...\n")
+				raftLog(LogBasic, dTerm, rf.me, "L->F in T%v/S%v (sendAppendEntries)\n", reply.Term, reply.ReceiverId)
+			} else {
+				rf.Unlock()
 			}
 		}
 	}
@@ -493,7 +506,6 @@ func (rf *Raft) candidate() {
 
 	rf.role = Candidate
 	rf.currentTerm += 1
-	raftLog(LogBasic, dTerm, rf.me, "candidate in term#%v (candidate)\n", rf.currentTerm)
 	rf.votedFor = rf.me
 	rf.timeoutStart = time.Now()
 
@@ -503,6 +515,8 @@ func (rf *Raft) candidate() {
 	lastLogTerm := term - 1 // TODO: maybe wrong
 
 	rf.Unlock()
+
+	raftLog(LogBasic, dTerm, rf.me, "C in T%v (candidate)\n", rf.currentTerm)
 
 	// Send RequestVote RPCs to all other servers
 	voteCounter := VoteCounter{n: 1}
@@ -552,7 +566,8 @@ func (rf *Raft) leader() {
 	rf.role = Leader
 	currentTerm := rf.currentTerm
 	rf.Unlock()
-	raftLog(LogBasic, dLeader, rf.me, "candidate becomes leader!\n")
+
+	raftLog(LogBasic, dLeader, rf.me, "C -> L/T%v! (leader)\n", currentTerm)
 
 	for rf.killed() == false {
 		rf.Lock()
@@ -561,7 +576,7 @@ func (rf *Raft) leader() {
 
 		// Not leader
 		if role != Leader {
-			raftLog(LogBasic, dTemp, rf.me, "leader becomes follower...\n")
+			raftLog(LogBasic, dDemotion, rf.me, "L -> F.. (leader)\n")
 			break
 		}
 
