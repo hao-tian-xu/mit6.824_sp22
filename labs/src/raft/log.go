@@ -45,10 +45,15 @@ type (
 //
 func LogRaft(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
 	if logVerbosity >= int(verbosity) {
-		time := time.Since(logStart).Microseconds()
-		time /= 100
+		_time := time.Since(logStart).Microseconds()
 
-		prefix := fmt.Sprintf("%06d %v S%02d ", time, string(topic), peerId)
+		sec := _time / 1e6
+		milliSec := (_time % 1e6) / 1e3
+		microSec := (_time % 1e3) / 1e2
+
+		timeFlag := fmt.Sprintf("%03d.%03d.%01d", sec, milliSec, microSec)
+
+		prefix := fmt.Sprintf("%v %v S%02d ", timeFlag, string(topic), peerId)
 		format = prefix + format
 		log.Printf(format, a...)
 	}
