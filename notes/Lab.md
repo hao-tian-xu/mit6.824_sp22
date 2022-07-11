@@ -140,9 +140,23 @@
 
 
 
+## Part 2B: log
 
-
-
+- [x] Run `git pull` to get the latest lab software.
+- [x] Your first goal should be to pass `TestBasicAgree2B()`. 
+  - [x] Start by implementing `Start()`, 
+  - [x] then write the code to send and receive new log entries via `AppendEntries` RPCs, following Figure 2. 
+  - [x] Send each newly committed entry on `applyCh` on each peer.
+- [x] You will need to implement the election restriction (section 5.4.1 in the paper).
+- [ ] One way to fail to reach agreement in the early Lab 2B tests is to hold repeated elections even though the leader is alive. 
+  - [ ] Look for bugs in election timer management, 
+  - [ ] or not sending out heartbeats immediately after winning an election.
+- [ ] Your code may have 
+  - [ ] loops that repeatedly check for certain events. 
+    - [ ] Don't have these loops execute continuously without pausing, since that will slow your implementation enough that it fails tests. 
+    - [ ] Use Go's [condition variables](https://golang.org/pkg/sync/#Cond), or insert a `time.Sleep(10 * time.Millisecond)` in each loop iteration.
+- [ ] Do yourself a favor for future labs and write (or re-write) code that's clean and clear. For ideas, re-visit our the [Guidance page](https://pdos.csail.mit.edu/6.824/labs/guidance.html) with tips on how to develop and debug your code.
+- [ ] **<u>*If you fail a test*</u>**, look over the code for the test in `config.go` and `test_test.go` to get a better understanding what the test is testing. `config.go` also illustrates how the tester uses the Raft API.
 
 
 

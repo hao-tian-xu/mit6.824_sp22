@@ -119,7 +119,7 @@ Posted on Mar 16, 2016
     - have the election timeout goroutine periodically check to see whether the time since then is greater than the timeout period. 
   - It's easiest to use time.Sleep() with a small constant argument to drive the periodic checks. Don't use time.Ticker and time.Timer; they are tricky to use correctly.
 - You'll want to have 
-  - <u>*a separate long-running goroutine that sends committed log entries in order on the applyCh*</u>. 
+  - <u>***a separate long-running goroutine that sends committed log entries in order on the applyCh***</u>. 
     - It must be separate, since sending on the applyCh can block; and 
     - it must be a single goroutine, since otherwise it may be hard to ensure that you send log entries in log order. 
   - The code that advances commitIndex will need to kick the apply goroutine; it's probably easiest to use a condition variable (Go's sync.Cond) for this.
