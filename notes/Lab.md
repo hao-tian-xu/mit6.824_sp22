@@ -160,11 +160,26 @@
 
 
 
+## Part 2C: persistence
 
+- [ ] it will save and restore persistent state from a `Persister` object (see `persister.go`). 
+  - [ ] Whoever calls `Raft.Make()` supplies a `Persister` that initially holds Raft's most recently persisted state (if any). 
+  - [ ] Raft should initialize its state from that `Persister`, and should use it to save its persistent state each time the state changes. 
+  - [ ] Use the `Persister`'s `ReadRaftState()` and `SaveRaftState()` methods.
 
+### Task
 
+- [ ] Complete the functions `persist()` and `readPersist()` in `raft.go` by adding code to save and restore persistent state. 
+  - [ ] You will need to encode (or "serialize") the state as an array of bytes in order to pass it to the `Persister`. 
+    - [ ] Use the `labgob` encoder; see the comments in `persist()` and `readPersist()`. `labgob` is like Go's `gob` encoder but prints error messages if you try to encode structures with lower-case field names. 
+  - [ ] Insert calls to `persist()` at the points where your implementation changes persistent state. 
+- [ ] Once you've done this, and if the rest of your implementation is correct, you should pass all of the 2C tests.
 
+### Hint
 
+- [ ] Run `git pull` to get the latest lab software.
+- [ ] The 2C tests are more demanding than those for 2A or 2B, and failures may be caused by problems in your code for 2A or 2B.
+- [x] You will probably need the optimization that backs up nextIndex by more than one entry at a time. Look at the [extended Raft paper](https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf) starting at the bottom of page 7 and top of page 8 (marked by a gray line). The paper is vague about the details; you will need to fill in the gaps, perhaps with the help of the 6.824 Raft lecture notes.
 
 
 

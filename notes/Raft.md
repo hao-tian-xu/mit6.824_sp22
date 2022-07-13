@@ -1,3 +1,24 @@
+# Lab TODO
+
+- [x] Figure8 5.4.2: subtlety in commit rule
+- [x] Chatch up quickly
+  - [x] 5.3: If desired, the protocol can be optimized to reduce the number of rejected AppendEntries RPCs...
+- [ ] ~~5.1: (if a client contacts a follower, the follower redirects it to the leader)~~
+- [ ] ~~5.1: Servers retry RPCs if they do not receive a response <u>*in a timely manner?*</u>~~
+  - [ ] ~~(also after a log inconsistency)~~
+
+- [x] 5.2: If the leader’s term (included in its RPC) is <u>*at least as large as*</u> the candidate’s current term, then the candidate recognizes the leader as legitimate and returns to follower state.
+- [x] 5.4.1: double check: "up-to-date"
+- [x] 5.6: double check: Timing and availability
+- [x] aux: check role immediatly after a sleep (relationships between operations and role check?)
+
+- [x] Debug: TestRejoin2B (1/10)
+  - [x] backup quickly with a condition unaware: no log yet `lastLogIndex == 0`
+
+- [ ] as less parallelism as possible (especially log), sometimes use `defer`
+
+
+
 # Students' Guide to Raft
 
 Posted on Mar 16, 2016
