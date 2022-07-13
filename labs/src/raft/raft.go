@@ -197,15 +197,10 @@ func min(a int, b int) int {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	var term int
-	var isleader bool
 	// Your code here (2A).
 	rf.Lock()
 	defer rf.Unlock()
-	term = rf.currentTerm
-	isleader = rf.role == Leader
-
-	return term, isleader
+	return rf.currentTerm, rf.role == Leader
 }
 
 // 2A UNUSED
@@ -304,7 +299,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
 		rf.demotion(args.Term)
-
 		go LogRaft(LogBasic, dTerm, rf.me, "F in T%v (RequestVote)/C%v\n", rf.currentTerm, args.CandidateId)
 	}
 
@@ -346,24 +340,22 @@ func (rf *Raft) sendRequestVote(server int, term int, lastLogIndex int, lastLogT
 	if !rf.termLock(term) {
 		return
 	}
-	if !ok {
+
+	switch true {
+	case !ok:
 		defer LogRaft(LogVerbose, dError, rf.me, "C send RequestVote to V#%v failed!\n", server)
-	} else {
-		if reply.VoteGranted == true {
-			defer func() {
-				voteCounter.Lock()
-				voteCounter.n += 1
-				voteCounter.Unlock()
-				LogRaft(LogBasic, dCandidate, rf.me, "C votedBy V%v! (sendRequestVote)\n", server)
-			}()
-		} else {
-			// All Servers: If RPC request or response contains term T > currentTerm:
-			//		set currentTerm = T, convert to follower
-			if reply.Term > rf.currentTerm {
-				rf.demotion(reply.Term)
-				defer LogRaft(LogBasic, dTerm, rf.me, "C->F in T%v/S%v (sendRequestVote)\n", reply.Term, reply.VoterId)
-			}
-		}
+	case reply.Term > rf.currentTerm:
+		// All Servers: If RPC request or response contains term T > currentTerm:
+		//		set currentTerm = T, convert to follower
+		rf.demotion(reply.Term)
+		defer LogRaft(LogBasic, dTerm, rf.me, "C->F in T%v/S%v (sendRequestVote)\n", reply.Term, reply.VoterId)
+	case reply.VoteGranted == true:
+		defer func() {
+			voteCounter.Lock()
+			voteCounter.n += 1
+			voteCounter.Unlock()
+			LogRaft(LogBasic, dCandidate, rf.me, "C votedBy V%v! (sendRequestVote)\n", server)
+		}()
 	}
 	rf.Unlock()
 }
@@ -398,8 +390,8 @@ type AppendEntriesReply struct {
 
 type Inconsistency struct {
 	// mismatch
-	Term       int
-	FirstIndex int
+	Term           int
+	TermFirstIndex int
 	// no entry
 	LastLogIndex int
 	NoEntry      bool
@@ -422,6 +414,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		go LogRaft(LogBasic, dDemotion, rf.me, "C -> F.. (AppendEntries)/L%v\n", args.LeaderId)
 	}
 
+	// Followers: reset election timeout if receiving AppendEntries RPC from current leader
+	rf.timeoutStart = time.Now()
+
 	// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
 		rf.demotion(args.Term)
@@ -429,12 +424,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		go LogRaft(LogBasic, dTerm, rf.me, "F in T%v (AppendEntries)/L%v\n", rf.currentTerm, args.LeaderId)
 	}
 
-	// Receiver implementation: Reply false if term < currentTerm
+	// Receiver implementation 1: Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
 	}
-	// Receiver implementation: Reply false if log doesn’t contain an entry
+	// Receiver implementation 2: Reply false if log doesn’t contain an entry
 	//		at prevLogIndex whose term matches prevLogTerm
 	lastLogIndex := len(rf.log) - 1
 	if lastLogIndex < args.PrevLogIndex {
@@ -445,27 +440,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	prevLogTerm := rf.log[args.PrevLogIndex].Term
 	if prevLogTerm != args.PrevLogTerm {
 		reply.Success = false
-		firstIndex := args.PrevLogIndex - 1
+		termFirstIndex := args.PrevLogIndex
 		for {
-			if rf.log[firstIndex].Term != prevLogTerm {
-				firstIndex++
+			termFirstIndex--
+			if rf.log[termFirstIndex].Term != prevLogTerm {
+				termFirstIndex++
 				break
 			}
-			firstIndex--
 		}
-		reply.Inconsistency = Inconsistency{Term: prevLogTerm, FirstIndex: firstIndex}
+		reply.Inconsistency = Inconsistency{Term: prevLogTerm, TermFirstIndex: termFirstIndex}
 		return
 	}
-
+	// Receiver implementation 4: Append any new entries not already in the log
 	reply.Success = true
-	// Followers: reset election timeout if receiving AppendEntries RPC from current leader
-	rf.timeoutStart = time.Now()
-	// Receiver implementation: Append any new entries not already in the log
 	if len(args.Entries) > 0 {
 		for i, entry := range args.Entries {
 			index := args.PrevLogIndex + 1 + i
 			if lastLogIndex >= index {
-				// Receiver implementation: If an existing entry conflicts with a new one
+				// Receiver implementation 3: If an existing entry conflicts with a new one
 				//		(same index but different terms), delete the existing entry and all that follow it
 				if entry.Term != rf.log[index].Term {
 					rf.log = append(rf.log[:index], args.Entries[i:]...)
@@ -476,11 +468,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				break
 			}
 		}
-
 		go LogRaft(LogBasic, dLogSuccess, rf.me, "log%v <- L%v! (AppendEntries)", len(rf.log)-1, args.LeaderId)
 	}
-
-	// Receiver implementation: If leaderCommit > commitIndex,
+	// Receiver implementation 5: If leaderCommit > commitIndex,
 	//		set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
 		oldCommitIndex := rf.commitIndex
@@ -506,17 +496,14 @@ func (rf *Raft) sendAppendEntries(server int, term int, initial bool) {
 	lastLogIndex := len(rf.log) - 1
 	nextIndex := rf.nextIndex[server]
 	prevLogIndex := nextIndex - 1
-	prevLogTerm := 0
-	if prevLogIndex >= 0 {
-		prevLogTerm = rf.log[prevLogIndex].Term
-	}
-	entries := make([]*LogEntry, 0)
+	prevLogTerm := rf.log[prevLogIndex].Term
+	leaderCommit := rf.commitIndex
 	// Leaders: If last log index ≥ nextIndex for a follower:
 	//		send AppendEntries RPC with log entries starting at nextIndex
+	entries := make([]*LogEntry, 0)
 	if !initial && lastLogIndex >= nextIndex {
 		entries = append(entries, rf.log[nextIndex:]...)
 	}
-	leaderCommit := rf.commitIndex
 	rf.Unlock()
 
 	args := &AppendEntriesArgs{term, rf.me, prevLogIndex, prevLogTerm, entries, leaderCommit}
@@ -527,45 +514,41 @@ func (rf *Raft) sendAppendEntries(server int, term int, initial bool) {
 	if !rf.termLock(term) {
 		return
 	}
-	if !ok {
-		defer LogRaft(LogVerbose, dError, rf.me, "L/T%v send AppendEntries to F%v failed!\n", term, server)
-	} else {
-		if reply.Success {
-			// Leaders: If successful: update nextIndex and matchIndex for follower
-			rf.nextIndex[server] = lastLogIndex + 1
-			rf.matchIndex[server] = lastLogIndex
-		} else {
-			if reply.Term > rf.currentTerm {
-				// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
-				rf.demotion(reply.Term)
-				defer LogRaft(LogBasic, dTerm, rf.me, "L->F in T%v/S%v (sendAppendEntries)\n", reply.Term, reply.ReceiverId)
-			} else {
-				// Leader: If AppendEntries fails because of log inconsistency: decrement nextIndex and retry
-				if reply.Inconsistency.NoEntry {
-					rf.nextIndex[server] = reply.Inconsistency.LastLogIndex + 1
-					defer LogRaft(LogBasic, dLogFail, rf.me, "L: log%v empty/F%v (sendAppendEntries)\n", prevLogIndex, reply.ReceiverId)
 
-				} else if reply.Inconsistency.Term != 0 {
-					if reply.Inconsistency.Term > prevLogTerm ||
-						rf.log[reply.Inconsistency.FirstIndex].Term != reply.Inconsistency.Term {
-						rf.nextIndex[server] = reply.Inconsistency.FirstIndex
-						defer LogRaft(LogBasic, dLogFail, rf.me, "L: log%v mismatch1/F%v (sendAppendEntries)\n", prevLogIndex, reply.ReceiverId)
-					} else {
-						firstIndex := reply.Inconsistency.FirstIndex
-						for {
-							firstIndex++
-							if rf.log[firstIndex].Term != reply.Inconsistency.Term {
-								break
-							}
-						}
-						rf.nextIndex[server] = firstIndex
-						defer LogRaft(LogBasic, dLogFail, rf.me, "L: log%v mismatch2/F%v (sendAppendEntries)\n", prevLogIndex, reply.ReceiverId)
-					}
-				} else {
-					log.Fatalln("log failed with unkown reason!")
+	switch true {
+	case !ok:
+		defer LogRaft(LogVerbose, dError, rf.me, "L/T%v send AppendEntries to F%v failed!\n", term, server)
+	case reply.Success:
+		// Leaders: If successful: update nextIndex and matchIndex for follower
+		rf.nextIndex[server] = lastLogIndex + 1
+		rf.matchIndex[server] = lastLogIndex
+	case reply.Term > rf.currentTerm:
+		// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
+		rf.demotion(reply.Term)
+		defer LogRaft(LogBasic, dTerm, rf.me, "L->F in T%v/S%v (sendAppendEntries)\n", reply.Term, reply.ReceiverId)
+	case reply.Inconsistency.NoEntry:
+		// Leaders: If AppendEntries fails because of log inconsistency: decrement nextIndex and retry
+		rf.nextIndex[server] = reply.Inconsistency.LastLogIndex + 1
+		defer LogRaft(LogBasic, dLogFail, rf.me, "L: log%v empty/F%v (sendAppendEntries)\n", prevLogIndex, reply.ReceiverId)
+	case reply.Inconsistency.Term != 0:
+		// Leaders: If AppendEntries fails because of log inconsistency: decrement nextIndex and retry
+		if reply.Inconsistency.Term > prevLogTerm ||
+			rf.log[reply.Inconsistency.TermFirstIndex].Term != reply.Inconsistency.Term {
+			rf.nextIndex[server] = reply.Inconsistency.TermFirstIndex
+			defer LogRaft(LogBasic, dLogFail, rf.me, "L: log%v mismatch1/F%v (sendAppendEntries)\n", prevLogIndex, reply.ReceiverId)
+		} else {
+			firstIndex := reply.Inconsistency.TermFirstIndex
+			for {
+				firstIndex++
+				if rf.log[firstIndex].Term != reply.Inconsistency.Term {
+					break
 				}
 			}
+			rf.nextIndex[server] = firstIndex
+			defer LogRaft(LogBasic, dLogFail, rf.me, "L: log%v mismatch2/F%v (sendAppendEntries)\n", prevLogIndex, reply.ReceiverId)
 		}
+	default:
+		log.Fatalln("log failed with unkown reason!")
 	}
 	rf.Unlock()
 }
