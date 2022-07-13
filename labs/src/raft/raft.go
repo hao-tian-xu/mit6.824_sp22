@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"6.824/labgob"
+	"bytes"
 	"log"
 	"math/rand"
 	"sort"
@@ -37,7 +39,7 @@ const (
 	// log verbosity level
 	LogBasic LogVerbosity = iota
 	LogVerbose
-	LogExcess
+	LogExcessive
 
 	// log topic
 	dError      LogTopic = "ERRO"
@@ -181,6 +183,7 @@ func (rf *Raft) lastLogStat() (int, int) {
 func (rf *Raft) demotion(term int) {
 	rf.currentTerm = term
 	rf.votedFor = NA
+	rf.persist()
 	rf.role = Follower
 }
 
@@ -203,7 +206,7 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.role == Leader
 }
 
-// 2A UNUSED
+// PERSIST
 
 //
 // save Raft's persistent state to stable storage,
@@ -212,13 +215,16 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(rf.currentTerm) != nil ||
+		e.Encode(rf.votedFor) != nil ||
+		e.Encode(rf.log) != nil {
+
+		log.Fatalln("persist() failed!")
+	}
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -229,19 +235,17 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	if d.Decode(&rf.currentTerm) != nil ||
+		d.Decode(&rf.votedFor) != nil ||
+		d.Decode(&rf.log) != nil {
+
+		log.Fatalln("readPersist() failed!")
+	}
 }
+
+// TILL 2D
 
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -319,6 +323,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			(args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)) {
 
 		rf.votedFor = args.CandidateId
+		rf.persist()
 		reply.VoteGranted = true
 
 		// Followers: reset election timeout if granting vote to candidate
@@ -461,10 +466,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				//		(same index but different terms), delete the existing entry and all that follow it
 				if entry.Term != rf.log[index].Term {
 					rf.log = append(rf.log[:index], args.Entries[i:]...)
+					rf.persist()
 					break
 				}
 			} else {
 				rf.log = append(rf.log, args.Entries[i:]...)
+				rf.persist()
 				break
 			}
 		}
@@ -589,6 +596,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) appendCommand(command interface{}) {
 	logEntry := LogEntry{rf.currentTerm, command}
 	rf.log = append(rf.log, &logEntry)
+	rf.persist()
 
 	go LogRaft(LogBasic, dLeader, rf.me, "log%v appendCommand", len(rf.log)-1)
 }
@@ -675,8 +683,9 @@ func (rf *Raft) candidate() {
 	rf.Lock()
 
 	rf.role = Candidate
-	rf.currentTerm += 1
+	rf.currentTerm++
 	rf.votedFor = rf.me
+	rf.persist()
 	rf.timeoutStart = time.Now()
 
 	// Prepare for RequestVote
