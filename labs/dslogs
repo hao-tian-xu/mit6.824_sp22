@@ -22,6 +22,7 @@ TOPICS = {
     "CMIT": "magenta",
     "PERS": "white",
     "SNAP": "bright_blue",
+    "APPL": "white",
     "DROP": "bright_red",
     "CLNT": "bright_green",
     "TEST": "bright_magenta",
@@ -51,6 +52,7 @@ def main(
     just: Optional[str] = typer.Option(None, "--just", "-j", callback=list_topics),
 ):
     topics = list(TOPICS)
+    all_topics = list(TOPICS)
 
     # We can take input from a stdin (pipes) or from a file
     input_ = file if file else sys.stdin
@@ -68,6 +70,7 @@ def main(
     for line in input_:
         try:
             time, topic, *msg = line.strip().split(" ")
+            assert topic in all_topics
             # To ignore some topics
             if topic not in topics:
                 continue
