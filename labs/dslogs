@@ -12,24 +12,16 @@ import typer
 # fmt: off
 # Mapping from topics to colors
 TOPICS = {
-    "TIMR": "bright_black",
+    "ERRO": "dark_red",
     "LEAD": "bright_yellow",
     "CAND": "bright_cyan",
-    "DEMO": "red",
+    "DEMO": "black",
     "TERM": "green",
     "LOG0": "blue",
     "LOG1": "cyan",
-    "CMIT": "magenta",
-    "PERS": "white",
-    "SNAP": "bright_blue",
-    "APPL": "white",
-    "DROP": "bright_red",
-    "CLNT": "bright_green",
-    "TEST": "bright_magenta",
-    "INFO": "bright_white",
-    "WARN": "bright_yellow",
-    "ERRO": "red",
-    "TRCE": "red",
+    "CMIT": "bright_black",
+    "SNAP": "bright_black",
+    "TRCE": "bright_white",
 }
 # fmt: on
 
