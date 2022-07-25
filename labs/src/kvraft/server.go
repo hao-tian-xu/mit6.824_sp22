@@ -25,7 +25,7 @@ const (
 	tKVServer LogTopic = "KVSR"
 
 	// timing
-	_LoopInterval = 100 * time.Millisecond
+	_LoopInterval = 10 * time.Millisecond
 )
 
 const Debug = false
@@ -43,6 +43,9 @@ type Op struct {
 	// otherwise RPC will break.
 	Key   string
 	Value string
+	// 3A Hint: You will need to uniquely identify client operations
+	ServerId int
+	OpId     int
 }
 
 type OpType int
@@ -60,77 +63,84 @@ type KVServer struct {
 	kvMap       map[string]string
 	condLock    sync.Mutex
 	cond        *sync.Cond
-	applyMsgMap map[int]*interface{}
+	applyMsgMap ApplyMsgMap
+	// 3A Hint: You will need to uniquely identify client operations
+	nextOpId int
+}
+
+type ApplyMsgMap struct {
+	sync.Mutex
+	m map[int]*interface{}
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	op := Op{Key: args.Key}
+	kv.mu.Lock()
+	opId := kv.nextOpId
+	kv.nextOpId++
+	kv.mu.Unlock()
+	op := Op{Key: args.Key, ServerId: kv.me, OpId: opId}
 
-	for {
-		commandIndex, _, isLeader := kv.rf.Start(op)
-		if !isLeader {
-			reply.Err = ErrWrongLeader
-			LogKV(vBasic, tKVServer, kv.me, "notLeader... (Get)\n")
-			return
-		}
+	commandIndex, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		LogKV(vBasic, tKVServer, kv.me, "notLeader... (Get)\n")
+		return
+	}
 
-		if ok := kv.waitApply(commandIndex, &op); ok {
-			kv.mu.Lock()
-			value, ok := kv.kvMap[args.Key]
-			kv.mu.Unlock()
-			if ok {
-				reply.Value = value
-				reply.Err = OK
-				LogKV(vBasic, tKVServer, kv.me, "get %v/%v! (Get)\n", args.Key, value)
-			} else {
-				reply.Err = ErrNoKey
-				LogKV(vBasic, tKVServer, kv.me, "get %v/nokey... (Get)\n", args.Key)
-			}
-			kv.cond.L.Lock()
-			delete(kv.applyMsgMap, commandIndex)
-			kv.cond.L.Unlock()
-			return
+	ok := kv.waitApply(commandIndex, &op)
+	if ok {
+		kv.mu.Lock()
+		value, ok := kv.kvMap[args.Key]
+		kv.mu.Unlock()
+		if ok {
+			reply.Value = value
+			reply.Err = OK
+			LogKV(vBasic, tKVServer, kv.me, "get %v/%v! (Get)\n", args.Key, value)
+		} else {
+			reply.Err = ErrNoKey
+			LogKV(vBasic, tKVServer, kv.me, "get %v/nokey... (Get)\n", args.Key)
 		}
-		go LogKV(vBasic, tKVServer, kv.me, "Get failed... (Get)\n")
-		time.Sleep(_LoopInterval)
+		kv.deleteApplyMsg(commandIndex)
+	} else {
+		LogKV(vBasic, tKVServer, kv.me, "Get failed... (Get)\n")
 	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	op := Op{Key: args.Key, Value: args.Value}
+	kv.mu.Lock()
+	opId := kv.nextOpId
+	kv.nextOpId++
+	kv.mu.Unlock()
+	op := Op{Key: args.Key, Value: args.Value, ServerId: kv.me, OpId: opId}
 
-	for {
-		commandIndex, _, isLeader := kv.rf.Start(op)
-		if !isLeader {
-			reply.Err = ErrWrongLeader
-			LogKV(vBasic, tKVServer, kv.me, "notLeader... (PutAppend)\n")
-			return
+	commandIndex, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		LogKV(vBasic, tKVServer, kv.me, "notLeader... (PutAppend)\n")
+		return
+	}
+
+	ok := kv.waitApply(commandIndex, &op)
+	if ok {
+		kv.mu.Lock()
+		if args.Op == opPut {
+			kv.kvMap[args.Key] = args.Value
+			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Put)\n", args.Key, args.Value)
+		} else if _, ok := kv.kvMap[args.Key]; ok {
+			kv.kvMap[args.Key] += args.Value
+			LogKV(vBasic, tKVServer, kv.me, "append %v/%v! (Append)\n", args.Key, args.Value)
+		} else {
+			kv.kvMap[args.Key] = args.Value
+			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Append)\n", args.Key, args.Value)
 		}
+		kv.mu.Unlock()
 
-		if ok := kv.waitApply(commandIndex, &op); ok {
-			kv.mu.Lock()
-			if args.Op == opPut {
-				kv.kvMap[args.Key] = args.Value
-				LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Put)\n", args.Key, args.Value)
-			} else if _, ok := kv.kvMap[args.Key]; ok {
-				kv.kvMap[args.Key] += args.Value
-				LogKV(vBasic, tKVServer, kv.me, "append %v/%v! (Append)\n", args.Key, args.Value)
-			} else {
-				kv.kvMap[args.Key] = args.Value
-				LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Append)\n", args.Key, args.Value)
-			}
-			kv.mu.Unlock()
-
-			reply.Err = OK
-			kv.cond.L.Lock()
-			delete(kv.applyMsgMap, commandIndex)
-			kv.cond.L.Unlock()
-			return
-		}
+		reply.Err = OK
+		kv.deleteApplyMsg(commandIndex)
+	} else {
 		LogKV(vBasic, tKVServer, kv.me, "PutAppend failed... (PutAppend)\n")
-		time.Sleep(_LoopInterval)
 	}
 }
 
@@ -161,15 +171,15 @@ func (kv *KVServer) waitApply(commandIndex int, op *Op) bool {
 	var command *interface{}
 	var ok bool
 
-	kv.cond.L.Lock()
 	for {
-		if command, ok = kv.applyMsgMap[commandIndex]; ok {
+		kv.applyMsgMap.Lock()
+		command, ok = kv.applyMsgMap.m[commandIndex]
+		kv.applyMsgMap.Unlock()
+		if ok {
 			break
-		} else {
-			kv.cond.Wait()
 		}
+		time.Sleep(_LoopInterval)
 	}
-	kv.cond.L.Unlock()
 
 	if *command == *op {
 		LogKV(vExcessive, tTrace, kv.me, "command%v applied!", commandIndex)
@@ -184,12 +194,17 @@ func (kv *KVServer) receiveApplyMsg() {
 	for !kv.killed() {
 		applyMsg = <-kv.applyCh
 		if applyMsg.CommandValid {
-			kv.cond.L.Lock()
-			kv.applyMsgMap[applyMsg.CommandIndex] = &applyMsg.Command
-			kv.cond.Broadcast()
-			kv.cond.L.Unlock()
+			kv.applyMsgMap.Lock()
+			kv.applyMsgMap.m[applyMsg.CommandIndex] = &applyMsg.Command
+			kv.applyMsgMap.Unlock()
 		}
 	}
+}
+
+func (kv *KVServer) deleteApplyMsg(commandIndex int) {
+	kv.cond.L.Lock()
+	delete(kv.applyMsgMap.m, commandIndex)
+	kv.cond.L.Unlock()
 }
 
 //
@@ -216,7 +231,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-	go LogKV(vExcessive, tKVServer, kv.me, "new kvServer!")
+	LogKV(vExcessive, tKVServer, kv.me, "new kvServer!")
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
@@ -224,7 +239,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.kvMap = map[string]string{}
 
 	kv.cond = sync.NewCond(&kv.condLock)
-	kv.applyMsgMap = map[int]*interface{}{}
+	kv.applyMsgMap = ApplyMsgMap{m: map[int]*interface{}{}}
+
+	kv.nextOpId = 0
 
 	// You may need initialization code here.
 	go kv.receiveApplyMsg()

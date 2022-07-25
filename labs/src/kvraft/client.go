@@ -63,13 +63,15 @@ func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
 	LogKV(vVerbose, tClient, ck.pid, "Clerk.Get\n")
-	args := GetArgs{key}
-	reply := GetReply{}
+	var args GetArgs
+	var reply GetReply
 
 	ck.Lock()
 	oldLeaderId, leaderId := ck.leaderId, ck.leaderId
 	ck.Unlock()
 	for {
+		args = GetArgs{key}
+		reply = GetReply{}
 		ok := ck.servers[leaderId].Call(rpcGet, &args, &reply)
 		if ok {
 			switch reply.Err {
@@ -103,13 +105,15 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	LogKV(vVerbose, tClient, ck.pid, "Clerk.PutAppend\n")
-	args := PutAppendArgs{key, value, op}
-	reply := PutAppendReply{}
+	var args PutAppendArgs
+	var reply PutAppendReply
 
 	ck.Lock()
 	oldLeaderId, leaderId := ck.leaderId, ck.leaderId
 	ck.Unlock()
 	for {
+		args = PutAppendArgs{key, value, op}
+		reply = PutAppendReply{}
 		ok := ck.servers[leaderId].Call(rpcPutAppend, &args, &reply)
 		if ok {
 			switch reply.Err {
@@ -130,43 +134,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 func (ck *Clerk) Put(key string, value string) {
 	ck.PutAppend(key, value, opPut)
 }
+
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, opAppend)
 }
-
-//func (ck *Clerk) call(rpc string, key string, value string, op string) string {
-//	var args, reply interface{}
-//	if rpc == rpcPutAppend {
-//		args = PutAppendArgs{key, value, op}
-//		reply = PutAppendReply{}
-//	} else if rpc == rpcGet {
-//		args = GetArgs{key}
-//		reply = GetReply{}
-//	}
-//
-//	ck.Lock()
-//	oldLeaderId, leaderId := ck.leaderId, ck.leaderId
-//	ck.Unlock()
-//	for {
-//		ok := ck.servers[leaderId].Call(rpc, &args, &reply)
-//		if ok {
-//			switch reply.Err {
-//			case OK:
-//				ck.leaderUpdate(oldLeaderId, leaderId)
-//				return reply.Value
-//			case ErrNoKey:
-//				ck.leaderUpdate(oldLeaderId, leaderId)
-//				return ""
-//			case ErrWrongLeader:
-//				leaderId++
-//				if leaderId >= ck.nServers {
-//					leaderId = 0
-//				}
-//			}
-//		}
-//		time.Sleep(_LoopInterval)
-//	}
-//}
 
 func (ck *Clerk) leaderUpdate(oldLeaderId int, newLeaderId int) {
 	if oldLeaderId != newLeaderId {

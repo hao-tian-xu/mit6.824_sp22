@@ -1018,6 +1018,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	go LogRaft(vExcessive, tTrace, rf.me, "new raft!\n")
 	nPeers := len(peers)
 
 	rf.currentTerm = 0
