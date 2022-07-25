@@ -14,7 +14,7 @@ var logStart time.Time
 var logVerbosity int
 
 func getVerbosity() int {
-	v := os.Getenv("VERBOSE")
+	v := os.Getenv("vRAFT")
 	level := 0
 	if v != "" {
 		var err error

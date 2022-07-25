@@ -13,7 +13,7 @@ import typer
 # Mapping from topics to colors
 TOPICS = {
     "ERRO": "dark_red",
-    "LEAD": "bright_yellow",
+    "LEAD": "bright_cyan",
     "CAND": "bright_cyan",
     "DEMO": "black",
     "TERM": "green",
@@ -22,6 +22,9 @@ TOPICS = {
     "CMIT": "bright_black",
     "SNAP": "bright_black",
     "TRCE": "bright_white",
+
+    "CLNT": "red",
+    "KVSR": "red",
 }
 # fmt: on
 
@@ -44,7 +47,7 @@ def main(
     just: Optional[str] = typer.Option(None, "--just", "-j", callback=list_topics),
 ):
     topics = list(TOPICS)
-    all_topics = list(TOPICS)
+    all_topics = set(TOPICS)
 
     # We can take input from a stdin (pipes) or from a file
     input_ = file if file else sys.stdin

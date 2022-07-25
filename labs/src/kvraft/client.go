@@ -1,13 +1,32 @@
 package kvraft
 
-import "6.824/labrpc"
+import (
+	"6.824/labrpc"
+	"os"
+	"sync"
+	"time"
+)
 import "crypto/rand"
 import "math/big"
 
+const (
+	// RPC call name
+	rpcGet       = "KVServer.Get"
+	rpcPutAppend = "KVServer.PutAppend"
+
+	// Op name
+	opPut    = "Put"
+	opAppend = "Append"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	pid      int
+	nServers int
+
+	sync.Mutex
+	leaderId int
 }
 
 func nrand() int64 {
@@ -21,6 +40,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.pid = os.Getpid() % 10
+	ck.nServers = len(servers)
+	ck.leaderId = 0
+	LogKV(vBasic, tClient, ck.pid, "new client!\n")
 	return ck
 }
 
@@ -39,7 +62,32 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	LogKV(vVerbose, tClient, ck.pid, "Clerk.Get\n")
+	args := GetArgs{key}
+	reply := GetReply{}
+
+	ck.Lock()
+	oldLeaderId, leaderId := ck.leaderId, ck.leaderId
+	ck.Unlock()
+	for {
+		ok := ck.servers[leaderId].Call(rpcGet, &args, &reply)
+		if ok {
+			switch reply.Err {
+			case OK:
+				ck.leaderUpdate(oldLeaderId, leaderId)
+				return reply.Value
+			case ErrNoKey:
+				ck.leaderUpdate(oldLeaderId, leaderId)
+				return ""
+			case ErrWrongLeader:
+				leaderId++
+				if leaderId >= ck.nServers {
+					leaderId = 0
+				}
+			}
+		}
+		time.Sleep(_LoopInterval)
+	}
 }
 
 //
@@ -54,11 +102,76 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	LogKV(vVerbose, tClient, ck.pid, "Clerk.PutAppend\n")
+	args := PutAppendArgs{key, value, op}
+	reply := PutAppendReply{}
+
+	ck.Lock()
+	oldLeaderId, leaderId := ck.leaderId, ck.leaderId
+	ck.Unlock()
+	for {
+		ok := ck.servers[leaderId].Call(rpcPutAppend, &args, &reply)
+		if ok {
+			switch reply.Err {
+			case OK:
+				ck.leaderUpdate(oldLeaderId, leaderId)
+				return
+			case ErrWrongLeader:
+				leaderId++
+				if leaderId >= ck.nServers {
+					leaderId = 0
+				}
+			}
+		}
+		time.Sleep(_LoopInterval)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.PutAppend(key, value, opPut)
 }
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.PutAppend(key, value, opAppend)
+}
+
+//func (ck *Clerk) call(rpc string, key string, value string, op string) string {
+//	var args, reply interface{}
+//	if rpc == rpcPutAppend {
+//		args = PutAppendArgs{key, value, op}
+//		reply = PutAppendReply{}
+//	} else if rpc == rpcGet {
+//		args = GetArgs{key}
+//		reply = GetReply{}
+//	}
+//
+//	ck.Lock()
+//	oldLeaderId, leaderId := ck.leaderId, ck.leaderId
+//	ck.Unlock()
+//	for {
+//		ok := ck.servers[leaderId].Call(rpc, &args, &reply)
+//		if ok {
+//			switch reply.Err {
+//			case OK:
+//				ck.leaderUpdate(oldLeaderId, leaderId)
+//				return reply.Value
+//			case ErrNoKey:
+//				ck.leaderUpdate(oldLeaderId, leaderId)
+//				return ""
+//			case ErrWrongLeader:
+//				leaderId++
+//				if leaderId >= ck.nServers {
+//					leaderId = 0
+//				}
+//			}
+//		}
+//		time.Sleep(_LoopInterval)
+//	}
+//}
+
+func (ck *Clerk) leaderUpdate(oldLeaderId int, newLeaderId int) {
+	if oldLeaderId != newLeaderId {
+		ck.Lock()
+		ck.leaderId = newLeaderId
+		ck.Unlock()
+	}
 }
