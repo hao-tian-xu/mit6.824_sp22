@@ -40,10 +40,20 @@ type (
 	LogTopic     string
 )
 
+var topicClient = map[string]bool{"CLNT": true}
+
 //
 // custom log function
 //
+func LogClient(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
+	_log("C", verbosity, topic, peerId, format, a...)
+}
+
 func LogKV(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
+	_log("K", verbosity, topic, peerId, format, a...)
+}
+
+func _log(role string, verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
 	if logVerbosity >= int(verbosity) {
 		_time := time.Since(logStart).Microseconds()
 
@@ -52,11 +62,6 @@ func LogKV(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a 
 		microSec := (_time % 1e3) / 1e2
 
 		timeFlag := fmt.Sprintf("%03d.%03d.%01d", sec, milliSec, microSec)
-
-		role := "K"
-		if topic == "CLNT" {
-			role = "C"
-		}
 
 		prefix := fmt.Sprintf("%v %v %v%02d ", timeFlag, string(topic), role, peerId)
 		format = prefix + format

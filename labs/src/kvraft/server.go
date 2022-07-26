@@ -20,6 +20,7 @@ const (
 
 	// log topic
 	tTrace LogTopic = "TRCE"
+	tError LogTopic = "ERRO"
 
 	tClient   LogTopic = "CLNT"
 	tKVServer LogTopic = "KVSR"
@@ -44,11 +45,9 @@ type Op struct {
 	Key   string
 	Value string
 	// 3A Hint: You will need to uniquely identify client operations
-	ServerId int
+	ClientId int
 	OpId     int
 }
-
-type OpType int
 
 type KVServer struct {
 	mu      sync.Mutex
@@ -60,87 +59,82 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	kvMap       map[string]string
-	condLock    sync.Mutex
-	cond        *sync.Cond
-	applyMsgMap ApplyMsgMap
-	// 3A Hint: You will need to uniquely identify client operations
-	nextOpId int
-}
-
-type ApplyMsgMap struct {
-	sync.Mutex
-	m map[int]*interface{}
+	kvMap              map[string]string
+	applyMsgMap        map[int]interface{}
+	processingOpMap    map[Op]bool
+	lastProcessedOpMap map[int]Op
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	kv.mu.Lock()
-	opId := kv.nextOpId
-	kv.nextOpId++
-	kv.mu.Unlock()
-	op := Op{Key: args.Key, ServerId: kv.me, OpId: opId}
-
-	commandIndex, _, isLeader := kv.rf.Start(op)
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		LogKV(vBasic, tKVServer, kv.me, "notLeader... (Get)\n")
-		return
-	}
-
-	ok := kv.waitApply(commandIndex, &op)
-	if ok {
-		kv.mu.Lock()
-		value, ok := kv.kvMap[args.Key]
-		kv.mu.Unlock()
-		if ok {
-			reply.Value = value
-			reply.Err = OK
-			LogKV(vBasic, tKVServer, kv.me, "get %v/%v! (Get)\n", args.Key, value)
-		} else {
-			reply.Err = ErrNoKey
-			LogKV(vBasic, tKVServer, kv.me, "get %v/nokey... (Get)\n", args.Key)
-		}
-		kv.deleteApplyMsg(commandIndex)
-	} else {
-		LogKV(vBasic, tKVServer, kv.me, "Get failed... (Get)\n")
-	}
+	op := Op{Key: args.Key, ClientId: args.ClientId, OpId: args.OpId}
+	reply.Err, reply.Value = kv.processOp(opGet, &op)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	kv.mu.Lock()
-	opId := kv.nextOpId
-	kv.nextOpId++
-	kv.mu.Unlock()
-	op := Op{Key: args.Key, Value: args.Value, ServerId: kv.me, OpId: opId}
+	op := Op{Key: args.Key, Value: args.Value, ClientId: args.ClientId, OpId: args.OpId}
+	reply.Err, _ = kv.processOp(args.Op, &op)
+}
 
-	commandIndex, _, isLeader := kv.rf.Start(op)
+func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
+	kv.mu.Lock()
+	if kv.processingOpMap[*op] {
+		kv.mu.Unlock()
+		LogKV(vVerbose, tTrace, kv.me, "processing... (%v)\n", opType)
+		return ErrDuplicate, ""
+	} else if opType != opGet && kv.lastProcessedOpMap[op.ClientId] == *op {
+		kv.mu.Unlock()
+		LogKV(vVerbose, tTrace, kv.me, "processed... (%v)\n", opType)
+		return OK, ""
+	}
+	commandIndex, _, isLeader := kv.rf.Start(*op)
+	kv.processingOpMap[*op] = true
+	kv.mu.Unlock()
+
 	if !isLeader {
-		reply.Err = ErrWrongLeader
-		LogKV(vBasic, tKVServer, kv.me, "notLeader... (PutAppend)\n")
-		return
+		LogKV(vVerbose, tTrace, kv.me, "notLeader... (%v)\n", opType)
+		return ErrWrongLeader, ""
 	}
 
-	ok := kv.waitApply(commandIndex, &op)
-	if ok {
-		kv.mu.Lock()
-		if args.Op == opPut {
-			kv.kvMap[args.Key] = args.Value
-			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Put)\n", args.Key, args.Value)
-		} else if _, ok := kv.kvMap[args.Key]; ok {
-			kv.kvMap[args.Key] += args.Value
-			LogKV(vBasic, tKVServer, kv.me, "append %v/%v! (Append)\n", args.Key, args.Value)
-		} else {
-			kv.kvMap[args.Key] = args.Value
-			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Append)\n", args.Key, args.Value)
-		}
-		kv.mu.Unlock()
+	commited := kv.waitApply(commandIndex, op)
 
-		reply.Err = OK
-		kv.deleteApplyMsg(commandIndex)
+	if commited {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		delete(kv.processingOpMap, *op)
+		kv.lastProcessedOpMap[op.ClientId] = *op
+
+		value, ok := kv.kvMap[op.Key]
+		switch opType {
+		case opGet:
+			if ok {
+				LogKV(vBasic, tKVServer, kv.me, "get %v/%v! (Get)\n", op.Key, value)
+				return OK, value
+			} else {
+				LogKV(vBasic, tKVServer, kv.me, "get %v/nokey... (Get)\n", op.Key)
+				return ErrNoKey, ""
+			}
+		case opPut:
+			kv.kvMap[op.Key] = op.Value
+			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Put)\n", op.Key, op.Value)
+			return OK, ""
+		case opAppend:
+			if ok {
+				kv.kvMap[op.Key] += op.Value
+				LogKV(vBasic, tKVServer, kv.me, "append %v/%v! (Append)\n", op.Key, op.Value)
+			} else {
+				kv.kvMap[op.Key] = op.Value
+				LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Append)\n", op.Key, op.Value)
+			}
+			return OK, ""
+		default:
+			log.Fatalln("unkown opType!! (processOp)")
+			return ErrFatal, ""
+		}
 	} else {
-		LogKV(vBasic, tKVServer, kv.me, "PutAppend failed... (PutAppend)\n")
+		LogKV(vBasic, tKVServer, kv.me, "%v notCommited... (processOp)\n", opType)
+		return ErrNotCommited, ""
 	}
 }
 
@@ -168,20 +162,20 @@ func (kv *KVServer) killed() bool {
 // HELPER METHOD
 
 func (kv *KVServer) waitApply(commandIndex int, op *Op) bool {
-	var command *interface{}
+	var command interface{}
 	var ok bool
 
 	for {
-		kv.applyMsgMap.Lock()
-		command, ok = kv.applyMsgMap.m[commandIndex]
-		kv.applyMsgMap.Unlock()
+		kv.mu.Lock()
+		command, ok = kv.applyMsgMap[commandIndex]
+		kv.mu.Unlock()
 		if ok {
 			break
 		}
 		time.Sleep(_LoopInterval)
 	}
 
-	if *command == *op {
+	if command == *op {
 		LogKV(vExcessive, tTrace, kv.me, "command%v applied!", commandIndex)
 		return true
 	} else {
@@ -194,17 +188,17 @@ func (kv *KVServer) receiveApplyMsg() {
 	for !kv.killed() {
 		applyMsg = <-kv.applyCh
 		if applyMsg.CommandValid {
-			kv.applyMsgMap.Lock()
-			kv.applyMsgMap.m[applyMsg.CommandIndex] = &applyMsg.Command
-			kv.applyMsgMap.Unlock()
+			kv.mu.Lock()
+			kv.applyMsgMap[applyMsg.CommandIndex] = applyMsg.Command
+			kv.mu.Unlock()
 		}
 	}
 }
 
 func (kv *KVServer) deleteApplyMsg(commandIndex int) {
-	kv.cond.L.Lock()
-	delete(kv.applyMsgMap.m, commandIndex)
-	kv.cond.L.Unlock()
+	kv.mu.Lock()
+	delete(kv.applyMsgMap, commandIndex)
+	kv.mu.Unlock()
 }
 
 //
@@ -237,11 +231,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.kvMap = map[string]string{}
-
-	kv.cond = sync.NewCond(&kv.condLock)
-	kv.applyMsgMap = ApplyMsgMap{m: map[int]*interface{}{}}
-
-	kv.nextOpId = 0
+	kv.applyMsgMap = map[int]interface{}{}
+	kv.processingOpMap = map[Op]bool{}
+	kv.lastProcessedOpMap = map[int]Op{}
 
 	// You may need initialization code here.
 	go kv.receiveApplyMsg()
