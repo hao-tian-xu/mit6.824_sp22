@@ -29,10 +29,6 @@ type PutAppendArgs struct {
 	OpId     int
 }
 
-type PutAppendReply struct {
-	Err Err
-}
-
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
@@ -40,7 +36,7 @@ type GetArgs struct {
 	OpId     int
 }
 
-type GetReply struct {
+type OpReply struct {
 	Err   Err
 	Value string
 }

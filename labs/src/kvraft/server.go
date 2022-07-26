@@ -42,8 +42,9 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Key   string
-	Value string
+	OpType string
+	Key    string
+	Value  string
 	// 3A Hint: You will need to uniquely identify client operations
 	ClientId int
 	OpId     int
@@ -65,27 +66,31 @@ type KVServer struct {
 	lastProcessedOpMap map[int]Op
 }
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+func (kv *KVServer) Get(args *GetArgs, reply *OpReply) {
 	// Your code here.
-	op := Op{Key: args.Key, ClientId: args.ClientId, OpId: args.OpId}
+	op := Op{OpType: opGet, Key: args.Key, ClientId: args.ClientId, OpId: args.OpId}
 	reply.Err, reply.Value = kv.processOp(opGet, &op)
 }
 
-func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *OpReply) {
 	// Your code here.
-	op := Op{Key: args.Key, Value: args.Value, ClientId: args.ClientId, OpId: args.OpId}
+	op := Op{OpType: args.Op, Key: args.Key, Value: args.Value, ClientId: args.ClientId, OpId: args.OpId}
 	reply.Err, _ = kv.processOp(args.Op, &op)
 }
 
 func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		LogKV(vVerbose, tTrace, kv.me, "notLeader... (%v)\n", opType)
+		return ErrWrongLeader, ""
+	}
 	kv.mu.Lock()
 	if kv.processingOpMap[*op] {
 		kv.mu.Unlock()
-		LogKV(vVerbose, tTrace, kv.me, "processing... (%v)\n", opType)
+		LogKV(vBasic, tTrace, kv.me, "processing... (%v)\n", opType)
 		return ErrDuplicate, ""
 	} else if opType != opGet && kv.lastProcessedOpMap[op.ClientId] == *op {
 		kv.mu.Unlock()
-		LogKV(vVerbose, tTrace, kv.me, "processed... (%v)\n", opType)
+		LogKV(vBasic, tTrace, kv.me, "processed... (%v)\n", opType)
 		return OK, ""
 	}
 	commandIndex, _, isLeader := kv.rf.Start(*op)
@@ -101,11 +106,11 @@ func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
 
 	if commited {
 		kv.mu.Lock()
-		defer kv.mu.Unlock()
 		delete(kv.processingOpMap, *op)
-		kv.lastProcessedOpMap[op.ClientId] = *op
-
+		//kv.lastProcessedOpMap[op.ClientId] = *op
 		value, ok := kv.kvMap[op.Key]
+		kv.mu.Unlock()
+
 		switch opType {
 		case opGet:
 			if ok {
@@ -116,15 +121,15 @@ func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
 				return ErrNoKey, ""
 			}
 		case opPut:
-			kv.kvMap[op.Key] = op.Value
+			//kv.kvMap[op.Key] = op.Value
 			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Put)\n", op.Key, op.Value)
 			return OK, ""
 		case opAppend:
 			if ok {
-				kv.kvMap[op.Key] += op.Value
+				//kv.kvMap[op.Key] += op.Value
 				LogKV(vBasic, tKVServer, kv.me, "append %v/%v! (Append)\n", op.Key, op.Value)
 			} else {
-				kv.kvMap[op.Key] = op.Value
+				//kv.kvMap[op.Key] = op.Value
 				LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Append)\n", op.Key, op.Value)
 			}
 			return OK, ""
@@ -190,6 +195,29 @@ func (kv *KVServer) receiveApplyMsg() {
 		if applyMsg.CommandValid {
 			kv.mu.Lock()
 			kv.applyMsgMap[applyMsg.CommandIndex] = applyMsg.Command
+
+			if op, ok := applyMsg.Command.(Op); ok {
+				if _, ok = kv.lastProcessedOpMap[op.ClientId]; !ok ||
+					op != kv.lastProcessedOpMap[op.ClientId] {
+					switch op.OpType {
+					case opPut:
+						kv.kvMap[op.Key] = op.Value
+					case opAppend:
+						_, exist := kv.kvMap[op.Key]
+						if exist {
+							kv.kvMap[op.Key] += op.Value
+						} else {
+							kv.kvMap[op.Key] = op.Value
+						}
+					}
+					kv.lastProcessedOpMap[op.ClientId] = op
+					if op.OpType != opGet {
+						LogKV(vBasic, tTrace, kv.me, "%v %v/%v applied! (receiveApplyMsg)", op.OpType, op.Key, op.Value)
+					}
+				}
+			} else {
+				log.Fatalln("command not op!!")
+			}
 			kv.mu.Unlock()
 		}
 	}

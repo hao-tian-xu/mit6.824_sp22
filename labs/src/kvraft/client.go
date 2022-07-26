@@ -62,12 +62,12 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	var args GetArgs
-	var reply GetReply
+	ck.Lock()
+	opId := ck.opId
+	ck.opId++
+	ck.Unlock()
 
-	ok := ck.sendOp(key, "", opGet, &args, &reply)
-
-	return ck.processReply(ok, reply.Err, "", reply.Value, opGet)
+	return ck.sendOp(opId, key, "", opGet)
 }
 
 //
@@ -82,61 +82,49 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	var args PutAppendArgs
-	var reply PutAppendReply
-
-	ok := ck.sendOp(key, value, op, &args, &reply)
-
-	ck.processReply(ok, reply.Err, key, value, op)
-}
-
-func (ck *Clerk) sendOp(key string, value string, op string, args interface{}, reply interface{}) bool {
 	ck.Lock()
-	leaderId := ck.leaderId
 	opId := ck.opId
 	ck.opId++
 	ck.Unlock()
 
-	LogClient(vVerbose, tClient, ck.me, "%v %v/%v\n", op, key, value)
-	if op == opGet {
-		args = &GetArgs{key, ck.me, opId}
-		reply = &GetReply{}
-		return ck.servers[leaderId].Call(rpcGet, args, reply)
-	} else {
-		args = &PutAppendArgs{key, value, op, ck.me, opId}
-		reply = &PutAppendReply{}
-		return ck.servers[leaderId].Call(rpcPutAppend, args, reply)
-	}
+	ck.sendOp(opId, key, value, op)
 }
 
-func (ck *Clerk) processReply(ok bool, err Err, key string, value string, op string) string {
+func (ck *Clerk) sendOp(opId int, key string, value string, op string) string {
+	ck.Lock()
+	leaderId := ck.leaderId
+	ck.Unlock()
+
+	reply := OpReply{}
+	var ok bool
+
+	LogClient(vBasic, tClient, ck.me, "%v %v/%v\n", op, key, value)
+	if op == opGet {
+		args := GetArgs{key, ck.me, opId}
+		ok = ck.servers[leaderId].Call(rpcGet, &args, &reply)
+	} else {
+		args := PutAppendArgs{key, value, op, ck.me, opId}
+		ok = ck.servers[leaderId].Call(rpcPutAppend, &args, &reply)
+	}
+
 	if ok {
-		if err == OK {
-			return value
-		} else if err == ErrNoKey {
+		if reply.Err == OK {
+			return reply.Value
+		} else if reply.Err == ErrNoKey {
 			return ""
 		} else {
-			if err == ErrDuplicate {
+			if reply.Err == ErrDuplicate {
 				time.Sleep(_LoopInterval)
-			} else if err == ErrWrongLeader {
-				ck.Lock()
-				ck.leaderId++
-				if ck.leaderId >= ck.nServers {
-					ck.leaderId = 0
-				}
-				ck.Unlock()
+			} else if reply.Err == ErrWrongLeader {
+				ck.findLeader()
 			}
-
-			if op == opGet {
-				return ck.Get(key)
-			} else {
-				ck.PutAppend(key, value, op)
-				return ""
-			}
+			return ck.sendOp(opId, key, value, op)
 		}
 	} else {
 		LogClient(vVerbose, tError, ck.me, "%v %v/%v failed...\n", op, key, value)
-		return ""
+
+		ck.findLeader()
+		return ck.sendOp(opId, key, value, op)
 	}
 }
 
@@ -148,10 +136,11 @@ func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, opAppend)
 }
 
-func (ck *Clerk) leaderUpdate(oldLeaderId int, newLeaderId int) {
-	if oldLeaderId != newLeaderId {
-		ck.Lock()
-		ck.leaderId = newLeaderId
-		ck.Unlock()
+func (ck *Clerk) findLeader() {
+	ck.Lock()
+	ck.leaderId++
+	if ck.leaderId >= ck.nServers {
+		ck.leaderId = 0
 	}
+	ck.Unlock()
 }

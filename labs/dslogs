@@ -23,8 +23,8 @@ TOPICS = {
     "SNAP": "bright_black",
     "TRCE": "bright_white",
 
-    "CLNT": "red",
-    "KVSR": "red",
+    "CLNT": "magenta",
+    "KVSR": "yellow",
 }
 # fmt: on
 
