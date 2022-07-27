@@ -1,13 +1,16 @@
 package kvraft
 
+// CONST AND TYPE
+
 const (
+	// reply Error Type
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
 	// Additional
-	ErrDuplicate   = "ErrDuplicate"
-	ErrNotCommited = "ErrNotCommited"
-	ErrFatal       = "ErrFatal"
+	ErrDuplicate  = "ErrDuplicate"
+	ErrNotApplied = "ErrNotApplied"
+	ErrFatal      = "ErrFatal"
 
 	// Op type
 	opPut    = "Put"
@@ -17,7 +20,11 @@ const (
 
 type Err string
 
+// RPC ARGS AND REPLY
+
+//
 // Put or Append
+//
 type PutAppendArgs struct {
 	Key   string
 	Value string

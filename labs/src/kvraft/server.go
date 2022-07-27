@@ -38,6 +38,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+// DATA TYPE
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
@@ -60,15 +62,19 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	kvMap              map[string]string
-	applyMsgMap        map[int]interface{}
-	processingOpMap    map[Op]bool
-	lastProcessedOpMap map[int]Op
+	kvMap              map[string]string // kv storage
+	processingOpMap    map[Op]bool       // save Ops that are being processed, TODO: maybe unnecessary
+	lastProcessedOpMap map[int]Op        // save last processed Op for eache client, TODO: also remember result
+	// channels for ApplyMsg transfer
+	applyOpChans map[int]chan Op
 }
+
+// RPC
 
 func (kv *KVServer) Get(args *GetArgs, reply *OpReply) {
 	// Your code here.
 	op := Op{OpType: opGet, Key: args.Key, ClientId: args.ClientId, OpId: args.OpId}
+
 	reply.Err, reply.Value = kv.processOp(opGet, &op)
 }
 
@@ -78,39 +84,60 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *OpReply) {
 	reply.Err, _ = kv.processOp(args.Op, &op)
 }
 
+//
+// process RPC request
+//
 func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
+	// check isLeader before processing or porcessed check, TODO: modify find leader method (may make this unnecessary)
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		LogKV(vVerbose, tTrace, kv.me, "notLeader... (%v)\n", opType)
 		return ErrWrongLeader, ""
 	}
+
 	kv.mu.Lock()
 	if kv.processingOpMap[*op] {
+		// op being processed, TODO: may be unnecessary
 		kv.mu.Unlock()
 		LogKV(vBasic, tTrace, kv.me, "processing... (%v)\n", opType)
 		return ErrDuplicate, ""
 	} else if opType != opGet && kv.lastProcessedOpMap[op.ClientId] == *op {
+		// just processed, TODO: also for Get operation (also save op result (a new struct for map value))
 		kv.mu.Unlock()
 		LogKV(vBasic, tTrace, kv.me, "processed... (%v)\n", opType)
 		return OK, ""
 	}
-	commandIndex, _, isLeader := kv.rf.Start(*op)
-	kv.processingOpMap[*op] = true
-	kv.mu.Unlock()
 
+	// Send op to raft by rf.Start()
+	commandIndex, _, isLeader := kv.rf.Start(*op)
+	//		if not isLeader
 	if !isLeader {
+		kv.mu.Unlock()
 		LogKV(vVerbose, tTrace, kv.me, "notLeader... (%v)\n", opType)
 		return ErrWrongLeader, ""
 	}
 
-	commited := kv.waitApply(commandIndex, op)
+	// make op as being processed, TODO: may be unnecessary
+	kv.processingOpMap[*op] = true
 
-	if commited {
-		kv.mu.Lock()
-		delete(kv.processingOpMap, *op)
-		//kv.lastProcessedOpMap[op.ClientId] = *op
-		value, ok := kv.kvMap[op.Key]
-		kv.mu.Unlock()
+	// make a channel for Op transfer, if not existing
+	if _, ok := kv.applyOpChans[commandIndex]; !ok {
+		kv.applyOpChans[commandIndex] = make(chan Op)
+	}
 
+	kv.mu.Unlock()
+
+	// Wait for the op to be applied
+	applied := kv.waitApplyMsg(commandIndex, op)
+
+	kv.mu.Lock()
+	// already processed or failed, delete from processing, TODO: may be unnecessary
+	delete(kv.processingOpMap, *op)
+
+	value, ok := kv.kvMap[op.Key]
+	kv.mu.Unlock()
+
+	// Reply to client (and log)
+	if applied {
 		switch opType {
 		case opGet:
 			if ok {
@@ -121,15 +148,12 @@ func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
 				return ErrNoKey, ""
 			}
 		case opPut:
-			//kv.kvMap[op.Key] = op.Value
 			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Put)\n", op.Key, op.Value)
 			return OK, ""
 		case opAppend:
 			if ok {
-				//kv.kvMap[op.Key] += op.Value
 				LogKV(vBasic, tKVServer, kv.me, "append %v/%v! (Append)\n", op.Key, op.Value)
 			} else {
-				//kv.kvMap[op.Key] = op.Value
 				LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Append)\n", op.Key, op.Value)
 			}
 			return OK, ""
@@ -139,9 +163,11 @@ func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
 		}
 	} else {
 		LogKV(vBasic, tKVServer, kv.me, "%v notCommited... (processOp)\n", opType)
-		return ErrNotCommited, ""
+		return ErrNotApplied, ""
 	}
 }
+
+// KILL
 
 //
 // the tester calls Kill() when a KVServer instance won't
@@ -164,41 +190,43 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-// HELPER METHOD
+// APPLYMSG
 
-func (kv *KVServer) waitApply(commandIndex int, op *Op) bool {
-	var command interface{}
-	var ok bool
+//
+// wait for the commandIndex to be commited in raft, return true if it's the same op
+//
+func (kv *KVServer) waitApplyMsg(commandIndex int, op *Op) bool {
+	kv.mu.Lock()
+	ch := kv.applyOpChans[commandIndex]
+	kv.mu.Unlock()
+	// wait for the commandIndex to be commited in raft and applied in kvserver
+	appliedOp := <-ch
 
-	for {
-		kv.mu.Lock()
-		command, ok = kv.applyMsgMap[commandIndex]
-		kv.mu.Unlock()
-		if ok {
-			break
-		}
-		time.Sleep(_LoopInterval)
-	}
-
-	if command == *op {
-		LogKV(vExcessive, tTrace, kv.me, "command%v applied!", commandIndex)
+	// return true if it's the same op
+	if appliedOp == *op {
+		LogKV(vVerbose, tTrace, kv.me, "command%v applied!", commandIndex)
 		return true
 	} else {
 		return false
 	}
 }
 
+//
+// iteratively receive ApplyMsg from raft and apply it to the kvserver, notify relevant RPC (leader server)
+//
 func (kv *KVServer) receiveApplyMsg() {
 	var applyMsg raft.ApplyMsg
 	for !kv.killed() {
+		// Recieve ApplyMsg from raft
 		applyMsg = <-kv.applyCh
+		// if ApplyMsg is a command
 		if applyMsg.CommandValid {
-			kv.mu.Lock()
-			kv.applyMsgMap[applyMsg.CommandIndex] = applyMsg.Command
-
+			// map command to Op
 			if op, ok := applyMsg.Command.(Op); ok {
-				if _, ok = kv.lastProcessedOpMap[op.ClientId]; !ok ||
-					op != kv.lastProcessedOpMap[op.ClientId] {
+				kv.mu.Lock()
+				// command is not processed
+				if lastOp, started := kv.lastProcessedOpMap[op.ClientId]; !started || op != lastOp {
+					// Apply the command to kvserver
 					switch op.OpType {
 					case opPut:
 						kv.kvMap[op.Key] = op.Value
@@ -210,24 +238,32 @@ func (kv *KVServer) receiveApplyMsg() {
 							kv.kvMap[op.Key] = op.Value
 						}
 					}
+					// remember last processed op
 					kv.lastProcessedOpMap[op.ClientId] = op
+
 					if op.OpType != opGet {
-						LogKV(vBasic, tTrace, kv.me, "%v %v/%v applied! (receiveApplyMsg)", op.OpType, op.Key, op.Value)
+						LogKV(vVerbose, tTrace, kv.me, "%v %v/%v applied! (receiveApplyMsg)", op.OpType, op.Key, op.Value)
 					}
+				} else {
+					// command already processed
+					LogKV(vVerbose, tTrace, kv.me, "%v %v/%v already processed... (receiveApplyMsg)", op.OpType, op.Key, op.Value)
+				}
+
+				// Send Op to RPC if relevant channel exists
+				ch, ok := kv.applyOpChans[applyMsg.CommandIndex]
+				kv.mu.Unlock()
+				if ok {
+					ch <- op
 				}
 			} else {
+				// map command to Op failed
 				log.Fatalln("command not op!!")
 			}
-			kv.mu.Unlock()
 		}
 	}
 }
 
-func (kv *KVServer) deleteApplyMsg(commandIndex int) {
-	kv.mu.Lock()
-	delete(kv.applyMsgMap, commandIndex)
-	kv.mu.Unlock()
-}
+// START KVSERVER
 
 //
 // servers[] contains the ports of the set of
@@ -253,17 +289,19 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-	LogKV(vExcessive, tKVServer, kv.me, "new kvServer!")
+	LogKV(vVerbose, tKVServer, kv.me, "new kvServer!")
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.kvMap = map[string]string{}
-	kv.applyMsgMap = map[int]interface{}{}
 	kv.processingOpMap = map[Op]bool{}
 	kv.lastProcessedOpMap = map[int]Op{}
 
+	kv.applyOpChans = map[int]chan Op{}
+
 	// You may need initialization code here.
+	// Start receiving ApplyMsg from raft
 	go kv.receiveApplyMsg()
 
 	return kv

@@ -76,7 +76,7 @@ def main(
             # any particular peer. Otherwise we can treat second column
             # as peer id
             if topic != "TEST":
-                i = int(msg[1: 3])
+                i = int(msg[1: 3]) % n_columns
 
             # Colorize output by using rich syntax when needed
             if colorize and topic in TOPICS:

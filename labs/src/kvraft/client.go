@@ -2,11 +2,14 @@ package kvraft
 
 import (
 	"6.824/labrpc"
+	"log"
 	"sync"
 	"time"
 )
 import "crypto/rand"
 import "math/big"
+
+// VAR, CONST AND TYPE
 
 var clientId = _NA
 
@@ -19,12 +22,11 @@ const (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	me       int
-	nServers int
-
-	sync.Mutex
-	leaderId int
-	opId     int
+	sync.Mutex     // lock
+	me         int // client id (increasing order)
+	nServers   int // number of kvservers
+	leaderId   int // assumed leader id
+	nextOpId   int // next op id (to identify op)
 }
 
 func nrand() int64 {
@@ -34,18 +36,26 @@ func nrand() int64 {
 	return x
 }
 
+// MAKE CLERK
+
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
-	ck.me = clientId
 	clientId++
+	if clientId >= 100 {
+		// personally limit client id to 2 digits
+		log.Fatalln("me: too many clients...")
+	}
+	ck.me = clientId
 	ck.nServers = len(servers)
 	ck.leaderId = 0
-	ck.opId = 0
+	ck.nextOpId = 0
 	LogClient(vBasic, tClient, ck.me, "new client!\n")
 	return ck
 }
+
+// RPC STUB
 
 //
 // fetch the current value for a key.
@@ -62,9 +72,11 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
+
+	// get unique op id
 	ck.Lock()
-	opId := ck.opId
-	ck.opId++
+	opId := ck.nextOpId
+	ck.nextOpId++
 	ck.Unlock()
 
 	return ck.sendOp(opId, key, "", opGet)
@@ -82,22 +94,27 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+
+	// get unique op id
 	ck.Lock()
-	opId := ck.opId
-	ck.opId++
+	opId := ck.nextOpId
+	ck.nextOpId++
 	ck.Unlock()
 
 	ck.sendOp(opId, key, value, op)
 }
 
+//
+// send RPC and process its reply
+//
 func (ck *Clerk) sendOp(opId int, key string, value string, op string) string {
 	ck.Lock()
 	leaderId := ck.leaderId
 	ck.Unlock()
 
+	// RPC Call
 	reply := OpReply{}
 	var ok bool
-
 	LogClient(vBasic, tClient, ck.me, "%v %v/%v\n", op, key, value)
 	if op == opGet {
 		args := GetArgs{key, ck.me, opId}
@@ -107,6 +124,7 @@ func (ck *Clerk) sendOp(opId int, key string, value string, op string) string {
 		ok = ck.servers[leaderId].Call(rpcPutAppend, &args, &reply)
 	}
 
+	// process RPC reply
 	if ok {
 		if reply.Err == OK {
 			return reply.Value
@@ -136,6 +154,11 @@ func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, opAppend)
 }
 
+// HELPER
+
+//
+// change leaderId to retry, TODO: change the way to find leader
+//
 func (ck *Clerk) findLeader() {
 	ck.Lock()
 	ck.leaderId++
