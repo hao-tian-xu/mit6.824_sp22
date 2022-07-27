@@ -115,6 +115,7 @@ type Raft struct {
 	nPeers       int
 	timeoutStart time.Time
 	role         peerRole
+	termLeader   map[int]int
 	// ApplyMsg
 	applyCh      chan ApplyMsg
 	condLock     sync.Mutex
@@ -463,6 +464,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Candidates: If AppendEntries RPC received from new leader: convert to follower
 	if rf.role == rCandidate && rf.currentTerm <= args.Term {
 		rf.role = rFollower
+		rf.termLeader[rf.currentTerm] = args.LeaderId
 
 		go LogRaft(vBasic, tDemotion, rf.me, "C -> F.. (AppendEntries)/L%v\n", args.LeaderId)
 	}
@@ -482,6 +484,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Followers: reset election timeout if receiving AppendEntries RPC from current leader
 	rf.timeoutStart = time.Now()
+	if _, ok := rf.termLeader[rf.currentTerm]; !ok {
+		rf.termLeader[rf.currentTerm] = args.LeaderId
+	}
 
 	// Receiver implementation 2: Reply false if log doesn’t contain an entry
 	//		at prevLogIndex whose term matches prevLogTerm
@@ -770,6 +775,26 @@ func (rf *Raft) appendCommand(command interface{}) {
 	go LogRaft(vBasic, tLeader, rf.me, "log%v (appendCommand)\n", lastLogIndex)
 }
 
+//
+// Wrapper for Start with currentLeader returned
+// return (index, term, isLeader, currentLeader)
+//
+func (rf *Raft) StartWithCurrentLeader(command interface{}) (int, int, bool, int) {
+	index, term, isLeader := rf.Start(command)
+	currentLeader := _NA
+	if isLeader {
+		return index, term, isLeader, currentLeader
+	} else {
+		rf.Lock()
+		if id, ok := rf.termLeader[term]; ok {
+			currentLeader = id
+		}
+		rf.Unlock()
+		LogRaft(vExcessive, tTrace, rf.me, "currentLeader%v", currentLeader)
+		return index, term, isLeader, currentLeader
+	}
+}
+
 // SEND APPLYMSG
 
 //
@@ -1037,6 +1062,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nPeers = nPeers
 	rf.timeoutStart = time.Now()
 	rf.role = rFollower
+	rf.termLeader = map[int]int{}
 
 	rf.applyCh = applyCh
 	rf.cond = sync.NewCond(&rf.condLock)

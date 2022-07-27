@@ -80,40 +80,36 @@ func (kv *KVServer) Get(args *GetArgs, reply *OpReply) {
 	// Your code here.
 	op := Op{OpType: opGet, Key: args.Key, ClientId: args.ClientId, OpId: args.OpId}
 
-	reply.Err, reply.Value = kv.processOp(opGet, &op)
+	kv.processOp(opGet, &op, reply)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *OpReply) {
 	// Your code here.
 	op := Op{OpType: args.Op, Key: args.Key, Value: args.Value, ClientId: args.ClientId, OpId: args.OpId}
-	reply.Err, _ = kv.processOp(args.Op, &op)
+	kv.processOp(args.Op, &op, reply)
 }
 
 //
 // process RPC request
 //
-func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
-	// check isLeader before processing or porcessed check, TODO: modify find leader method (may make this unnecessary)
-	if _, isLeader := kv.rf.GetState(); !isLeader {
-		LogKV(vVerbose, tTrace, kv.me, "notLeader... (%v)\n", opType)
-		return ErrWrongLeader, ""
-	}
-
+func (kv *KVServer) processOp(opType string, op *Op, reply *OpReply) {
 	kv.mu.Lock()
 	// If op is the same as lastOp
 	if lastOp, ok := kv.lastOpMap[op.ClientId]; ok && lastOp.op == *op {
 		kv.mu.Unlock()
 		LogKV(vBasic, tTrace, kv.me, "processed... (%v)\n", opType)
-		return OK, lastOp.value
+		reply.Err, reply.Value = OK, lastOp.value
+		return
 	}
 
 	// Send op to raft by rf.Start()
-	commandIndex, _, isLeader := kv.rf.Start(*op)
+	commandIndex, _, isLeader, currentLeader := kv.rf.StartWithCurrentLeader(*op)
 	//		if not isLeader
 	if !isLeader {
 		kv.mu.Unlock()
 		LogKV(vVerbose, tTrace, kv.me, "notLeader... (%v)\n", opType)
-		return ErrWrongLeader, ""
+		reply.Err, reply.CurrentLeader = ErrWrongLeader, currentLeader
+		return
 	}
 
 	// make a channel for Op transfer, if not existing
@@ -137,31 +133,29 @@ func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
 		case opGet:
 			if exist {
 				LogKV(vBasic, tKVServer, kv.me, "get %v/%v! (Get)\n", op.Key, value)
-				return OK, value
+				reply.Err, reply.Value = OK, value
 			} else {
 				LogKV(vBasic, tKVServer, kv.me, "get %v/nokey... (Get)\n", op.Key)
-				return ErrNoKey, ""
+				reply.Err, reply.Value = ErrNoKey, ""
 			}
 		case opPut:
 			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Put)\n", op.Key, op.Value)
-			return OK, ""
+			reply.Err = OK
 		case opAppend:
 			if exist {
 				LogKV(vBasic, tKVServer, kv.me, "append %v/%v! (Append)\n", op.Key, op.Value)
 			} else {
 				LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Append)\n", op.Key, op.Value)
 			}
-			return OK, ""
+			reply.Err = OK
 		}
 	case ErrNotApplied:
 		LogKV(vBasic, tKVServer, kv.me, "%v %v/%v notApplied... (processOp)\n", opType, op.Key, op.Value)
-		return ErrNotApplied, ""
+		reply.Err = ErrNotApplied
 	case ErrTimeout:
 		LogKV(vBasic, tKVServer, kv.me, "%v %v/%v timeout... (processOp)\n", opType, op.Key, op.Value)
-		return ErrTimeout, ""
+		reply.Err = ErrTimeout
 	}
-	log.Fatalln("unkown err!! (processOp)")
-	return ErrFatal, ""
 }
 
 // KILL
@@ -196,7 +190,7 @@ func (kv *KVServer) waitApply(commandIndex int, op *Op) Err {
 	kv.mu.Lock()
 	ch := kv.applyOpChans[commandIndex]
 	kv.mu.Unlock()
-	// Wait for the commandIndex to be commited in raft and applied in kvserver, TODO: timeout? --> many duplicates
+	// Wait for the commandIndex to be commited in raft and applied in kvserver
 	select {
 	case appliedOp := <-ch:
 		// return true if it's the same op

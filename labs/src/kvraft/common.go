@@ -45,6 +45,7 @@ type GetArgs struct {
 }
 
 type OpReply struct {
-	Err   Err
-	Value string
+	Err           Err
+	Value         string
+	CurrentLeader int
 }
