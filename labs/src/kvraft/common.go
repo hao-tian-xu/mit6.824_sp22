@@ -11,6 +11,7 @@ const (
 	ErrDuplicate  = "ErrDuplicate"
 	ErrNotApplied = "ErrNotApplied"
 	ErrFatal      = "ErrFatal"
+	ErrTimeout    = "ErrTimeout"
 
 	// Op type
 	opPut    = "Put"

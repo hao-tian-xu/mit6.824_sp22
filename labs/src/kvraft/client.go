@@ -2,7 +2,6 @@ package kvraft
 
 import (
 	"6.824/labrpc"
-	"log"
 	"sync"
 	"time"
 )
@@ -43,11 +42,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	// You'll have to add code here.
 	clientId++
-	if clientId >= 100 {
-		// personally limit client id to 2 digits
-		log.Fatalln("me: too many clients...")
-	}
-	ck.me = clientId
+	ck.me = clientId % 100 // personally limit client id to 2 digits
 	ck.nServers = len(servers)
 	ck.leaderId = 0
 	ck.nextOpId = 0
@@ -79,6 +74,7 @@ func (ck *Clerk) Get(key string) string {
 	ck.nextOpId++
 	ck.Unlock()
 
+	LogClient(vBasic, tClient, ck.me, "Get %v\n", key)
 	return ck.sendOp(opId, key, "", opGet)
 }
 
@@ -101,6 +97,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.nextOpId++
 	ck.Unlock()
 
+	LogClient(vBasic, tClient, ck.me, "%v %v/%v\n", op, key, value)
 	ck.sendOp(opId, key, value, op)
 }
 
@@ -115,7 +112,7 @@ func (ck *Clerk) sendOp(opId int, key string, value string, op string) string {
 	// RPC Call
 	reply := OpReply{}
 	var ok bool
-	LogClient(vBasic, tClient, ck.me, "%v %v/%v\n", op, key, value)
+	LogClient(vExcessive, tTrace, ck.me, "%v %v/%v\n", op, key, value)
 	if op == opGet {
 		args := GetArgs{key, ck.me, opId}
 		ok = ck.servers[leaderId].Call(rpcGet, &args, &reply)
@@ -132,8 +129,8 @@ func (ck *Clerk) sendOp(opId int, key string, value string, op string) string {
 			return ""
 		} else {
 			if reply.Err == ErrDuplicate {
-				time.Sleep(_LoopInterval)
-			} else if reply.Err == ErrWrongLeader {
+				time.Sleep(_MinInterval)
+			} else if reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
 				ck.findLeader()
 			}
 			return ck.sendOp(opId, key, value, op)

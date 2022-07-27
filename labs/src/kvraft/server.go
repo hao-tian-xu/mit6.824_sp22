@@ -26,7 +26,8 @@ const (
 	tKVServer LogTopic = "KVSR"
 
 	// timing
-	_LoopInterval = 10 * time.Millisecond
+	_MinInterval       = 10 * time.Millisecond
+	_HeartBeatInterval = 100 * time.Millisecond
 )
 
 const Debug = false
@@ -62,11 +63,15 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	kvMap              map[string]string // kv storage
-	processingOpMap    map[Op]bool       // save Ops that are being processed, TODO: maybe unnecessary
-	lastProcessedOpMap map[int]Op        // save last processed Op for eache client, TODO: also remember result
+	kvMap     map[string]string // kv storage
+	lastOpMap map[int]LastOp    // save last processed Op for eache client
 	// channels for ApplyMsg transfer
 	applyOpChans map[int]chan Op
+}
+
+type LastOp struct {
+	op    Op
+	value string
 }
 
 // RPC
@@ -95,16 +100,11 @@ func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
 	}
 
 	kv.mu.Lock()
-	if kv.processingOpMap[*op] {
-		// op being processed, TODO: may be unnecessary
-		kv.mu.Unlock()
-		LogKV(vBasic, tTrace, kv.me, "processing... (%v)\n", opType)
-		return ErrDuplicate, ""
-	} else if opType != opGet && kv.lastProcessedOpMap[op.ClientId] == *op {
-		// just processed, TODO: also for Get operation (also save op result (a new struct for map value))
+	// If op is the same as lastOp
+	if lastOp, ok := kv.lastOpMap[op.ClientId]; ok && lastOp.op == *op {
 		kv.mu.Unlock()
 		LogKV(vBasic, tTrace, kv.me, "processed... (%v)\n", opType)
-		return OK, ""
+		return OK, lastOp.value
 	}
 
 	// Send op to raft by rf.Start()
@@ -116,9 +116,6 @@ func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
 		return ErrWrongLeader, ""
 	}
 
-	// make op as being processed, TODO: may be unnecessary
-	kv.processingOpMap[*op] = true
-
 	// make a channel for Op transfer, if not existing
 	if _, ok := kv.applyOpChans[commandIndex]; !ok {
 		kv.applyOpChans[commandIndex] = make(chan Op)
@@ -127,20 +124,18 @@ func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
 	kv.mu.Unlock()
 
 	// Wait for the op to be applied
-	applied := kv.waitApplyMsg(commandIndex, op)
+	applied := kv.waitApply(commandIndex, op)
 
 	kv.mu.Lock()
-	// already processed or failed, delete from processing, TODO: may be unnecessary
-	delete(kv.processingOpMap, *op)
-
-	value, ok := kv.kvMap[op.Key]
+	value, exist := kv.kvMap[op.Key] // TODO: wrong place to check exist for both Get and Append (may let APPLY_MSG decide)
 	kv.mu.Unlock()
 
 	// Reply to client (and log)
-	if applied {
+	switch applied {
+	case OK:
 		switch opType {
 		case opGet:
-			if ok {
+			if exist {
 				LogKV(vBasic, tKVServer, kv.me, "get %v/%v! (Get)\n", op.Key, value)
 				return OK, value
 			} else {
@@ -151,20 +146,22 @@ func (kv *KVServer) processOp(opType string, op *Op) (Err, string) {
 			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Put)\n", op.Key, op.Value)
 			return OK, ""
 		case opAppend:
-			if ok {
+			if exist {
 				LogKV(vBasic, tKVServer, kv.me, "append %v/%v! (Append)\n", op.Key, op.Value)
 			} else {
 				LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Append)\n", op.Key, op.Value)
 			}
 			return OK, ""
-		default:
-			log.Fatalln("unkown opType!! (processOp)")
-			return ErrFatal, ""
 		}
-	} else {
-		LogKV(vBasic, tKVServer, kv.me, "%v notCommited... (processOp)\n", opType)
+	case ErrNotApplied:
+		LogKV(vBasic, tKVServer, kv.me, "%v %v/%v notApplied... (processOp)\n", opType, op.Key, op.Value)
 		return ErrNotApplied, ""
+	case ErrTimeout:
+		LogKV(vBasic, tKVServer, kv.me, "%v %v/%v timeout... (processOp)\n", opType, op.Key, op.Value)
+		return ErrTimeout, ""
 	}
+	log.Fatalln("unkown err!! (processOp)")
+	return ErrFatal, ""
 }
 
 // KILL
@@ -190,24 +187,27 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-// APPLYMSG
+// APPLY_MSG
 
 //
-// wait for the commandIndex to be commited in raft, return true if it's the same op
+// wait for the commandIndex to be applied in kvserver, return true if it's the same op
 //
-func (kv *KVServer) waitApplyMsg(commandIndex int, op *Op) bool {
+func (kv *KVServer) waitApply(commandIndex int, op *Op) Err {
 	kv.mu.Lock()
 	ch := kv.applyOpChans[commandIndex]
 	kv.mu.Unlock()
-	// wait for the commandIndex to be commited in raft and applied in kvserver
-	appliedOp := <-ch
-
-	// return true if it's the same op
-	if appliedOp == *op {
-		LogKV(vVerbose, tTrace, kv.me, "command%v applied!", commandIndex)
-		return true
-	} else {
-		return false
+	// Wait for the commandIndex to be commited in raft and applied in kvserver, TODO: timeout? --> many duplicates
+	select {
+	case appliedOp := <-ch:
+		// return true if it's the same op
+		if appliedOp == *op {
+			LogKV(vVerbose, tTrace, kv.me, "command%v applied!", commandIndex)
+			return OK
+		} else {
+			return ErrNotApplied
+		}
+	case <-time.After(_HeartBeatInterval * 5):
+		return ErrTimeout
 	}
 }
 
@@ -225,35 +225,41 @@ func (kv *KVServer) receiveApplyMsg() {
 			if op, ok := applyMsg.Command.(Op); ok {
 				kv.mu.Lock()
 				// command is not processed
-				if lastOp, started := kv.lastProcessedOpMap[op.ClientId]; !started || op != lastOp {
+				if lastOp, started := kv.lastOpMap[op.ClientId]; !started || op != lastOp.op {
 					// Apply the command to kvserver
+					value, ok := kv.kvMap[op.Key]
 					switch op.OpType {
 					case opPut:
 						kv.kvMap[op.Key] = op.Value
 					case opAppend:
-						_, exist := kv.kvMap[op.Key]
-						if exist {
+						if ok {
 							kv.kvMap[op.Key] += op.Value
 						} else {
 							kv.kvMap[op.Key] = op.Value
 						}
 					}
 					// remember last processed op
-					kv.lastProcessedOpMap[op.ClientId] = op
+					kv.lastOpMap[op.ClientId] = LastOp{op, value}
 
 					if op.OpType != opGet {
-						LogKV(vVerbose, tTrace, kv.me, "%v %v/%v applied! (receiveApplyMsg)", op.OpType, op.Key, op.Value)
+						LogKV(vVerbose, tTrace, kv.me, "%v %v/%v applied! (receiveApplyMsg)\n", op.OpType, op.Key, op.Value)
 					}
 				} else {
 					// command already processed
-					LogKV(vVerbose, tTrace, kv.me, "%v %v/%v already processed... (receiveApplyMsg)", op.OpType, op.Key, op.Value)
+					LogKV(vVerbose, tTrace, kv.me, "%v %v/%v already processed... (receiveApplyMsg)\n", op.OpType, op.Key, op.Value)
 				}
 
 				// Send Op to RPC if relevant channel exists
 				ch, ok := kv.applyOpChans[applyMsg.CommandIndex]
 				kv.mu.Unlock()
 				if ok {
-					ch <- op
+					select {
+					case ch <- op:
+					case <-time.After(_MinInterval):
+						LogKV(vVerbose, tTrace, kv.me, "chan%v blocked...\n", applyMsg.CommandIndex)
+					}
+				} else {
+					LogKV(vVerbose, tTrace, kv.me, "chan%v doesn't exist...\n", applyMsg.CommandIndex)
 				}
 			} else {
 				// map command to Op failed
@@ -295,8 +301,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.kvMap = map[string]string{}
-	kv.processingOpMap = map[Op]bool{}
-	kv.lastProcessedOpMap = map[int]Op{}
+	kv.lastOpMap = map[int]LastOp{}
 
 	kv.applyOpChans = map[int]chan Op{}
 
