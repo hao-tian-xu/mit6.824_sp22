@@ -365,264 +365,290 @@
 
 
 
-# L6. Debugging
+# L7. Fault Tolerance: Raft (2)
 
-## Introduction
+### Divergence (cont.)
 
-### Why hard
+### Log Catchup
 
-- The algorithms are difficult to comprehend.
-  - Details are easy to misunderstand or misinterpret, leaving your code with subtle bugs.
-- Distributed systems are highly parallel, with many possible interleavings.
-  - You have to consider all of the ways different threads and machines can interact.
-- The activities in a distributed system are often not cleanly separated.
-  - It can be hard to isolate erroneous behavior from the vast quantities of correct behavior occurring around it.
+subtlety in commit rule
 
-### Objectives
+### Service recovery
 
-- A distributed system used by a million users that functions correctly 99.9% of the time will still be broken for a thousand users.
-- **You will learn the most if you refine your code until all the bugs are gone.**
-- We only give you credit for a test case if you pass it every time.
+### Using Raft
 
-### What are the labs like?
+### Correctness: Linearizability
 
-- You are likely to spend more time debugging than writing code
-- But debugging is more about **quality** than **time spent**.
-  - **If you aren’t making progress, stop and try a new approach!**
-- If you run out of ideas and get stuck, please come to office hours.
-  - **We do not want you to suffer alone.** We will help you figure out the right next steps!
+- total order of operations
+- match real-time
+- read return results of the last write
 
-### Where do bugs come from?
 
-- Mistakes and typos in the code you wrote. (Common.)
-- Hardware glitches and compiler bugs. (Rare.)
-- The worst bugs often come from **incorrect or incomplete mental models**.
-  - Strange behaviors in systems can emerge from **unexpected interactions** of different components.
-  - “A system is [something that has] the ability to fail in a way humans find surprising.” - https://twitter.com/SwiftOnSecurity/status/1484962240465932304
-  -  If you don’t quite realize something about how a system works, you may write incorrect code for it, and **you might not realize that the code is incorrect, even when you look at it.**
 
+# L9. Zookeeper Case Study
 
+Main Purpose: configuration / coordination
 
-## Terminology
+### Throughput
 
-- We debug because we’ve observed a **failure** and want to find the **fault**, so that we can fix it and prevent the **failure** from happening again. We can find the **fault** by tracing backwards through the series of **errors** that led to the **failure**.
-  - FAULT: The original underlying cause of an error
-    - Such as a typo, incorrect logic, a wrong assumption, or a hardware glitch.
-  - ERROR: Any specific state in the system that is not what it should be.
-    - Such as a variable with the wrong value or a function getting called when it shouldn’t.
-  - FAILURE: The final visible malfunction of a system.
-    - Such as a crash or a failure of a test case.
+- asynchronous writes --> single write to disk with multiple `Put()`s
+- read is not linearizable --> `Get()`s from different servers
 
-### Types of errors
+###  ZK guarantees
 
-- **LATENT ERROR**: an error where something is **invisibly wrong**.
-  - These errors may silently propagate and lead to further errors.
-- **MASKED ERROR**: an error that becomes **unimportant by happenstance**.
-  - From the demo earlier: imagine if our reduce worker ignored any intermediate files it couldn't find, and it just so happened that the map tasks that weren't done executing didn't contain any key/value pairs.
-  - It would still have been an error to assign the reduce task early, but it wouldn't matter!
-- **OBSERVABLE ERROR**: an error that has been **surfaced** to you.
-  - An observable error is apparent in the output of a program, possibly as an error message, an unexpected message, the lack of an expected message, or incorrect data in an intermediate file.
+- Linearizable Writes
+- FIFO client order
+  - Writes - client-specified order (in  overall asynchronous order)
+  - Reads
 
-### The error model
+### Motivation
 
-<img src="image.assets/Screen Shot 2022-07-04 at 11.12.07.png" alt="Screen Shot 2022-07-04 at 11.12.07" style="zoom:25%;" />
+- Test-and-Set
+- Configuration Info
+- Master Election
 
+### API
 
+- znodes
 
-## Fault Interval
+  - regular
+  - ephemeral
+  - sequential
 
-### Methodical debugging: fault intervals
+- RPCs
 
-- A **fault interval** is an interval of time in which a fault must have occurred.
-  - Initial fault interval: [ran the test script, observed a failure)
-  - The fault must have occurred in this interval.
-  - To find it, we shrink the length of the interval until there’s only a single line of code that could be at fault.
-    - Pushing the start forward can only be an approximation: just because an intermediate state appears error-free, that doesn’t mean it is!
-    - Pulling the end backward is easier: it is always the moment of the earliest observed error.
-  - Every time we observe an error inside the fault interval, we can shrink it!
+  - create(path, data, flags)
+    - exclusive -- only first create indicates success
+  - delete(path, version)
+    - if znode.version = version, then delete
+  - exists(path, watch)
+    - watch=true means also send notification if path is later created/deleted
+  - getData(path, watch)
+  - setData(path, data, version)
+    - if znode.version = version, then update
+  - getChildren(path, watch)
+  - sync()
+    - sync then read ensures writes before sync are visible to same client's read
+    - client could instead submit a write
 
-### How do we narrow down the fault interval?
+- Example: add one to a number stored in a ZooKeeper znode ("mini-transaction")
 
-- We add **instrumentation** to <u>turn latent errors inside the fault interval into observable errors</u>.
-- Instrumentation: the parts of your code that let you detect particular errors.
-- Examples:
-  - **Assertions** and **validations** that check a piece of state, ensure that it has the expected value, and panic (or at least print) if it's wrong.
-  - **Print statements** that display values, so that they can be manually analyzed.
-- Also, consider using your own **test cases** to validate certain slices of code.
-  - These can help you identify shorter fault intervals, which will be easier to debug!
-  - <u>We provide the grading set, and you are welcome to copy them as a basis for your own!</u>
-  - You can augment our **opaque testing** with **clear-box testing**, by examining internal state.
-- Consider different approaches to solve different problems. 
-  - **Assertions and validations** are effective when it is easy to check if something is correct, because they only provide a signal when tripped, and don’t obscure other information. 
-  - **Print statements** are applicable to many situations, but can easily become overwhelming. 
-  - **Test cases** can help you reduce the length of the program’s execution.
+  - ```pseudocode
+    while true:
+        x, v := getData("f")
+        if setData(x + 1, version=v):
+          break
+    ```
 
-### The debugging “main loop”
+- Herd effects
 
-1. Identify the earliest observable error (which is the end of the fault interval)
-2. Formulate a **hypothesis** about the **most proximate cause** of the error.
-3. Add instrumentation to test that hypothesis and run your code again.
-4. **If false**: go back to step 2 and come up with a new hypothesis.
-5. **If true**: you have a new earliest observable error. Continue from step 1 !
+  - N^2^ complexity
+  - Example: Locks without Herd Effect ("scalable lock")
+      (look at pseudo-code in paper, Section 2.4, page 6)
+      1. create a "sequential" file
+      2. list files
+      3. if no lower-numbered, lock is acquired!
+        4. if exists(next-lower-numbered, watch=true)
+             1. wait for event...
+        5. goto 2
 
-### Tips on following the main loop
 
-- If you're struggling to make progress, **start writing down notes**!
-  - Write down every time you find an earlier first observable error.
-  - Write down your hypotheses, and their results.
-- If your hypotheses aren't turning out to be true, **make them more specific**!
-  - Eventually, you end up at the level of "why does this variable equal $X$ instead of $Y$ ?"
 
-### Optimization: error intervals
+# L10: Chain Replication
 
-- Situation: We have a variable that holds a value that it should not hold.
-- We can often diagnose a value error by **tracing the value backward**.
-- We can apply **binary search** to repeatedly bisect the flow of the variable.
+### Approaches to RSMs
 
-### A note on multiple faults
+1. Run all ops through Raft/Paxos (Lab3)
+2. Configuration service + Primary/Backup replication (Common)
 
-- **This doesn’t need to change our approach**: we still keep debugging, identifying faults one at a time and fixing them, until our code stops failing.
-- Remember: **if you fix a fault, and your code still fails, that doesn’t necessarily mean you were wrong about the fault!** There might be multiple faults involved!
-  - The question to ask if this happens is – does this fault still lead to an error? And if not, what other source might the error have?
+### Chain replication
 
-### Dealing with intermittent bugs
+- Purpose: P/B replication for approach 2
+- Pros
+  - Reads ops involve 1 server
+  - Simple recovery plan
+  - Linearizability
+  - Influential
 
-- In our labs, you are likely to encounter bugs that only appear rarely.
-- Solution: **run your code many times**, until it fails at least once, while **printing out everything that could be relevant**.
-- Afterwards, use tools to help you review different **slices** of the output. 
-  - Use tools like grep, or your own tools, to search the output to answer specific questions.
-- You can make lots of progress debugging from just a single execution. You only have to rerun when you want to add new information to your output!
-  - **The more intermittent the bug, the more information you probably want to include!**
+### Overview
 
+- Servers in a chain: Head and Tail
 
+### CR properties (wrt. Raft)
 
-## Logging
+- Pros:
+  - Client RPCs split between head and tail
+  - Head sends update once
+  - Read ops involve only tail
+  - Simple crash recovery
+- Cons:
+  - One failure requires reconfiguration
+  - Slow server in Chain Replication is very damaging
 
-### Logging to a file
+### Extension for read parallelism
 
-- `$ go test -race`
-  - This displays the output on your screen directly.
-- `$ go test -race &> output.log`
-  - This puts all the output into “output.log” so that you can review it later.
-- `$ go test -race |& tee output.log`
-  - This puts the output into the log AND displays it on your screen.
-- `$ grep "an important string" output.log`
-  - This searches through your log for only lines containing “an important string.” This can help you avoid scrolling through irrelevant information.
+- Splits object across many chains
+  - CH1: S1 S2 S3
+  - CH2: S2 S3 S1
+  - CH3: S3 S1 S2
+- --> scale + linearizability
 
-### Using format strings
 
-- Consider using format strings to print concise single-line messages
-  - `log.Printf(“[MODULE] Thing happened. MV=%v, MOV=%v\n”, my_variable, my_other_variable);`
 
-### Questions to ask about print statements
+# L11. Distributed Transactions
 
-- **How much detail do I need?**
-  - More details makes instrumentation more broadly useful. Less helps avoid distraction!
-- **Can I make it easy to adjust the focus and detail level later?**
-  - You can define a constant for each module, and set it to true or false based on whether you want that module to print output. You can also filter out irrelevant detail with a tool!
-- **What format should my print statements take?**
-  - You may have to scroll through 1000 s of lines of output. What format is best for you?
-  - Consider text colors, columns, consistent formats, code words, and symbols!
+- 2-phase locking (2PL)
+- 2-phase commit (2PC)
 
-### Print statements may have timing effects
+### Problem: cross-machine atomic ops
 
-- Unfortunately, sometimes printing lots of information can actually mask or unmask bugs in your code!
-  - This is because print statements can be slow, and so they can affect timing.
-- Dealing with this requires some creativity.
-  - You might write your logging messages to an array, and print them out in the background.
-  - You might focus on using assertions and validations, which can execute faster in the common case.
-  - You might try to inject or eliminate some other source of variability to compensate.
-  - Or you might switch to trying to track down why inserting a delay on a certain line leads to success or failure!
+- goal: atomicity w.r.t. failures + concurrency
 
+### Transactions
 
+- ACID: Atomic, Consistent, Isolated, Durable
+- out focus: fistributed transactions
 
-## Further Advice
+### Isolation: Serializability
 
-### Design for debugging
+- Problem cases
+  - t1 <- get(x); transfer(x, y); t2 <- get(y)
+  - put(x); get(x); get(y); put(y)
 
-- You will spend lots of time debugging in 6.824, so you should consider ***debuggability*** as a primary goal when you write your code!
-- Some ideas you might consider:
-  - Using **assertions** everywhere in your code to keep errors from snowballing.
-  - Building **abstractions** around debugging, such as by having all RPCs go through a single method, and always printing out the request and reply every time.
-  - Printing out **specially-formatted logs**, so that you can <u>filter them or put them into columns</u>.
-  - **Minimizing the number of goroutines** that you run, **and the number of times you use locks + channels**, so that there are fewer possible interleavings of your code.
-- Be creative! Writing debuggable code can be difficult, so be prepared to revise your approach as the semester goes on!
+### Concurrency control
 
-### Understand whose code is in scope
+1. pessimistic (locks) (today)
+2. optimistic (no locks, abort if not serializable)
 
-- **All code is in scope for debugging.**
-- You may need to read, understand, and instrument any piece of code. 
-  - **Yes, even if we provided it!**
-- If you're failing a test case and don't know why, **read that test case!**
-- If you don't understand a piece of code we provided - **ask!**
+### Two-phase locking (lock per record)
 
-### Tips on avoiding pitfalls
+- one way to implement serializability (single machine)
+- 2PL rules
+  - T only acquires lock before using
+  - T holds ultil commit / abort
+- Two-phase locking can produce deadlock
+  - The system must detect (cycles? timeout?) and abort a transaction
 
-- Once you understand the code you've written, continuing to reread it to try to find bugs may not be effective!
-- Just because a piece of code looks like it's correct doesn't mean it is!
-- Just because you wrote a piece of code recently doesn't mean it's the most likely place to find a fault!
-- **If you make changes to your code before you're confident that you understand what's wrong with it, you might make it worse!**
+### Two-phase commit: Crashes
 
-### Tweaking timeouts
+- We want "atomic commit" (multiple machines)
+- Discussion
+  - Use raft to make Coordinator available
+  - Raft ~ 2PC?
+    - Raft: all servers do the same (RSM)
+    - 2PC: all servers operate on different data
+      atomic ops across servers
 
-- In the Raft labs, we ask you to decide on timeouts for certain behaviors.
-  - Like elections and heartbeats.
-- There are a wide range of timeouts that will let you pass the test cases.
-  - You may need to try a few options!
-- However: timeouts also impact the execution flow of a test case.
-  - Changing timeouts can cause unrelated errors to become masked or unmasked!
-- If you're spending a lot of time fiddling with timeouts, you're probably on the wrong track!
-  - Oftentimes, this is simply obscuring or unobscuring the underlying fault.
 
-## Wrap-up
 
-- Debugging is challenging, but you can learn to do it well.
-- Follow a **methodical** process to debug.
-- **Experiment** with new approaches to debugging!
-- **Most importantly: if you're spending hours debugging and don't get anywhere, that means you should try a different approach!**
+# L12. Frangipani
 
-### Further Resources
+- Network file systems
+- Focus (a gentle introduction)
+  - cache coherence
+  - distributed locking
+  - distributed crash recovery
 
-- Blog post from a former TA: [Debugging by Pretty Printing](https://blog.josejg.com/debugging-pretty/) 
-  - If you don’t already know how to effectively filter down and view very large quantities of output from a program, please read this! 
-- The lab guidance page: [Lab guidance](https://pdos.csail.mit.edu/6.824/labs/guidance.html) 
-  - There are many great tips here!
+### Traditional Network FS vs Frangipani
 
-## *Thinking*
+- simple client and complex FS
+- Frangipani: complex client with FS
 
-- Debug是这门课lab耗时最多的部分，在完成Lab2A的过程中有所体会，在讲座中的一些点也引起了共鸣
-  - 主要的过程是通过增加instrumentation缩小fault intervals从而找到最早引发error的代码
-  - 我在之前没有用到的部分是
-    - 读完整的代码，以及读test case；
-    - 在有信心理解代码如何出错之前修改代码可能让它变得更差
-    - 对log的形式化（如分栏和颜色）；
-    - 多次运行test找到概率极低的bug；
-    - 提问：群或是其他地方
-- 在Lab2A过程中有共鸣的部分
-  - 使用format string，让log简介清晰准确
-  - log的详细程度，未来可以通过参数来调节
-  - 尽量减少goroutine的数量和lock/channel使用的数量，
-  - print statement对于timing的影响
-    - 比如每次AppendEntries的失败都print的话对整个的timing影响极大，因此不可取
-  - 不必频繁的调整timeout，按照test的基准以及论文的要求可以确定一个大致的范围
-  - 要敢于试验新的方法，一个方法尝试了很久没有进展要敢于换方法
-  - 记录过程，一个钟科学的探索方法
+### Use case
 
+- Researchers: compiling, editing
+- Potentially share files/dr
+  - user-to-user sharing
+  - same user logs inot more than 1 workstations
 
+### Design choices
 
+- Caching (write-back)
+- Strong consistency
+- Performance
 
+### Cache coherence / consistency
 
+- lock server
+  - busy, idle
 
+### Atomicity
 
+- same lock server
 
+### Crsh recovery
 
+- write-ahead logging
 
 
 
+# L14. Spanner
 
+- Wide-area transactions
+  - R/W transaction: 2PC + 2PL + Paxos groups
+  - R/O transaction: snapshot isolation + syncronized clocks
+- Widely-used
 
+### Organization
 
+- different data centers
+- multiple shards --> parallelism
+- Paxos group per shard
+  - --> data center: fault tolerance, slowness
+- Replica close to clients
 
+### Challenges
+
+- Read of local replica yields latest Write
+- Transactions across Shards
+- Transactions must be serializable
+
+### Read/Write transactions
+
+
+
+## Read-only transactions
+
+- 10 x Faster than R/W
+  - Read from local shards
+  - No lock
+  - No 2PC
+
+### Correctness
+
+- Serializable
+- External consistency ~ Linearizability (transaction version)
+
+### Snapshot Isolation
+
+- Timestamp
+
+### Stale Replica
+
+- Solution: "safte time"
+  - Paxos sends writes in timestamp order
+  - Before Rx@15, wait for Wx>@15
+    (Also wait for transactions that have prepared but not committed)
+
+### Clocks must be perfect
+
+- Matters only for R/O transactions
+- Difficulty: clock is naturally drifty
+  - --> atomic clocks --> synchronize clocks (gps) --> $\epsilon$ few microsec to few millisec
+- Solution: time stamps are intervals
+  - [earliest, latest]
+- Rule change
+  - Start rule: `timestamp = now.latest`
+  - Commit wait: delay the commit until `timestamp < now.earlist`
+
+### Discussion
+
+- R/W transaction: 2PC + 2PL
+- R/O transaction: 
+  - snapshot isolation 
+  - --> external consistency
+  - --> time stamp order
+  - --> time intervals
 
 
 

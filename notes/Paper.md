@@ -197,52 +197,145 @@
 10. **Related work**
 11. **Conclusion**
 
-## *Thinking-1 (to section 5)*
+### *Thinking-1 (to section 5)*
 
 - 这篇论文介绍了一个共识算法Raft
   - 主要机制是Majority Election，保证了一个commited log entry出现在未来的所有leader的log中，因此保证了所有server的state machine所应用的同一编号的log entry所包含的内容是相同的，即state machine safety
   - Raft一个关键的设计特征是可理解性，因此在关键的leader election的过程中，在一次选举失败后，采用了随机重试的方法（避免各种corner case）
     - 随机和概率（当代性）替代了确定性
 
+### *Thinking-2 (section 7 to end)*
+
+- 两个研究/论文的方法
+  - 由于raft算法设计的目的是understandability，如何对这个相对主观的标准进行对比评价
+  - 使用TLA+ specification language来做出正式的specification，并由该formal spec证明其correctness
 
 
-# Debugging by Pretty Printing
 
-## Debugging distributed code hits different
+# ZooKeeper: Wait-free coordination for Internet-scale systems
 
-- In the Raft labs there are 
-  - N raft peers executing in parallel as if they were in separate machines. For each one of these peers there will be 
-    - multiple goroutines executing in parallel (commonly one or two timers, an applier and some amount of RPC and RPC reply handlers), leading to **large amounts of concurrency**.
-- Moreover, in a system like Raft not only there are multiple threads printing output at once, but they will be 
-  - printing about very heterogeneous events such as: timer resets, log operations, elections, crash recovery or communication with the replicated state machine. 
-  - Crucially, different types of events will occur with different frequencies, which can lead to **overly verbose logs if they are not trimmed in some way**.
-- Therefore, we would ideally like to know **who** is printing each line and **what topic** the message is related to.
-  - We will make Go print a boring log with a specific format and then make use of the [Rich](https://github.com/willmcgugan/rich) Python library to abstract away the ugly complexity of printing beautifully formatted terminal output.
+1. Introduction
+2. The ZooKeeper service
+   1. Service overview
+   2. Client API
+   3. ZooKeeper guarantees
+   4. Examples of primitives
+3. ZooKeeper Appliations
+4. ZooKeeper Implementation
+   1. Request Processor
+   2. Atomic Broadcast
+   3. Replicated Database
+   4. Client-Server Interactions
+5. Evaluation
+   1. Throughput
+   2. Latency of requests
+   3. Performance of barriers
+6. Related work
+7. Conclusions
 
-### The Go side
+### *Thinking*
 
-- **Toggling the output verbosity**
-- **Logging with topics**
-  - The topics relate to different parts of the implementation, and by making them fine grained we will able <u>to filter, search and even highlight them with different colors</u>.
-- **The print function**
+- 介绍了一个基于Zab（类似Raft）的无等待协调服务，由于对象是互联网规模的系统，因此性能是关键因素
+  - 提供了两个顺序的保障
+    - 一个是写操作是linearizable的（但读操作不是，因此性能和服务器数量是线性相关的）
+    - 另一个是单个client的操作是按顺序的
+  - 通过znode的类型以及版本号让需要strong consistency的client可以自行实现mini-transaction或lock等操作
+    - 由于对象是互联网规模的系统，也提出了client避免herd effect的方法
 
-### Prettifying the Logs
 
-- [Rich](https://github.com/willmcgugan/rich) and [Typer](https://github.com/tiangolo/typer)
-- pager strategy: `tmux`
 
-### Capturing Rare Failures
+# Chain Replication for Supporting High Throughput and Availability
 
-- Ideally we would like a script that does the following:
-  - Executes N runs of a series of tests
-  - Saves failed runs for later inspection
-  - Runs tests in parallel.
-    - it also sometimes helps by introducing more concurrency, leading to rare interleavings to happen more frequently.
+1. Introduction
+2. A Storage Service Interface
+3. Chain Replication Protocol
+   1. Protocol Details
+4. Primary/Backup Protocols
+5. Simulation Experiments
+   1. Single Chain No Failures
+   2. Multiple Chains, No Failures
+   3. Effects of Failures on Throughput
+   4. Large Scale Replication of Critical Data
+6. Related Work
+7. Concluding Remarks
 
-## *Thinking*
+### *Thinking*
 
-- 设置log的格式，并通过parser将其打印为所需的样式
-  - 将log.Printf嵌入到一个函数内扩展其功能，而不是将该功能写无数遍
+- 介绍了链式复制：一个可以同时支持高吞吐量和Linearizability的分布式存储
+  - 通过链式复制write操作产生的状态改变，以及所有reply都由tail发出保证了Linearizability
+  - 通过将数据分布在不同的链中，从而读操作由不同的tail完成，保证了Scalability和高吞吐量
+
+
+
+# Frangipani: A Scalable Distributed File System
+
+1. Introduction
+2. System Structure
+   1. Components
+   2. Security and the Client/Server Configuration
+   3. Discussion
+3. Disk Layout
+4. Logging and Recovery
+5. Synchronization and Cache Coherence
+6. The Lock Service
+7. Adding and Removing Servers
+8. Backup
+9. Performance
+   1. Experimental Setup
+   2. Single Machine Performance
+   3. Scaling
+   4. Effects of Lock Contention
+10. Related Work
+11. Conclusions
+
+### *Thinking*
+
+- 介绍了Frangipani，一个分布式文件系统，该系统首次提出了几个重要的概念
+  - Cache Coherence：保证不同用户在（使用本地缓存）读写同一文件的strong consistency
+    - 前设条件是大部分人都主要在自己的文件上工作，因此文件操作在本地缓存中进行
+  - Distributed Locking：通过lock servers和busy、idle、write-ahead logging等机制，提供了strong consistency的同时保证了performance
+    - 类似unix系统中硬盘的写操作
+  - Distributed Crash Recovery：一个server崩溃后可由系统中任意server进行恢复（类似unix系统中的硬盘恢复）
+
+
+
+# Spanner: Google’s Globally-Distributed Database
+
+1. Introduction
+2. Implementation
+   1. Spanserver Software Stack
+   2. Directories and Placement
+   3. Data Model
+3. True Time
+4. Concurrency Control
+   1. Timestamp Mangagement
+      1. Paxos Leader Leases
+      2. Assigning Timestamps to RW Transactions
+      3. Serving Reads at a Timestamp
+      4. Assigning Timestamps to RO Transactions
+   2. Details
+      1. Read-Write Transactions
+      2. Read-Only Transactions
+      3. Schema-Change Transactions
+      4. Refinements
+5. Evaluation
+   1. Microbenchmarks
+   2. Availability
+   3. TrueTime
+   4. F1
+6. Related Work
+7. Future Work
+8. Conclusions
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -345,7 +345,6 @@ type List[T any] struct {
 	val  T
 }
 
-
 ```
 
 ## Concurrency

@@ -169,17 +169,137 @@
 
 ### Task
 
-- [ ] Complete the functions `persist()` and `readPersist()` in `raft.go` by adding code to save and restore persistent state. 
-  - [ ] You will need to encode (or "serialize") the state as an array of bytes in order to pass it to the `Persister`. 
-    - [ ] Use the `labgob` encoder; see the comments in `persist()` and `readPersist()`. `labgob` is like Go's `gob` encoder but prints error messages if you try to encode structures with lower-case field names. 
-  - [ ] Insert calls to `persist()` at the points where your implementation changes persistent state. 
-- [ ] Once you've done this, and if the rest of your implementation is correct, you should pass all of the 2C tests.
+- [x] Complete the functions `persist()` and `readPersist()` in `raft.go` by adding code to save and restore persistent state. 
+  - [x] You will need to encode (or "serialize") the state as an array of bytes in order to pass it to the `Persister`. 
+    - [x] Use the `labgob` encoder; see the comments in `persist()` and `readPersist()`. `labgob` is like Go's `gob` encoder but prints error messages if you try to encode structures with lower-case field names. 
+  - [x] Insert calls to `persist()` at the points where your implementation changes persistent state. 
+- [x] Once you've done this, and if the rest of your implementation is correct, you should pass all of the 2C tests.
 
 ### Hint
 
-- [ ] Run `git pull` to get the latest lab software.
-- [ ] The 2C tests are more demanding than those for 2A or 2B, and failures may be caused by problems in your code for 2A or 2B.
+- [x] Run `git pull` to get the latest lab software.
+- [x] The 2C tests are more demanding than those for 2A or 2B, and failures may be caused by problems in your code for 2A or 2B.
 - [x] You will probably need the optimization that backs up nextIndex by more than one entry at a time. Look at the [extended Raft paper](https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf) starting at the bottom of page 7 and top of page 8 (marked by a gray line). The paper is vague about the details; you will need to fill in the gaps, perhaps with the help of the 6.824 Raft lecture notes.
+
+
+
+## Part 2D: log compaction
+
+- [ ] Section 7 of the [extended Raft paper](https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf) outlines the scheme; you will have to design the details.
+- [x] You may find it helpful to refer to the [diagram of Raft interactions](https://pdos.csail.mit.edu/6.824/notes/raft_diagram.pdf) to understand how the replicated service and Raft communicate.
+- [x] Your Raft must provide the following function that the service can call with a serialized snapshot of its state: `Snapshot(index int, snapshot []byte)`
+  - [x] In Lab 2D, the tester calls `Snapshot()` periodically. In Lab 3, you will write a key/value server that calls `Snapshot()`; the snapshot will contain the complete table of key/value pairs. The service layer calls `Snapshot()` on every peer (not just on the leader).
+  - [x] The `index` argument indicates the highest log entry that's reflected in the snapshot. Raft should discard its log entries before that point. 
+  - [x] You'll need to revise your Raft code to operate while storing only the tail of the log.
+- [x] You'll need to implement the `InstallSnapshot` RPC discussed in the paper that allows a Raft leader to tell a lagging Raft peer to replace its state with a snapshot. 
+  - [x] You will likely need to think through how InstallSnapshot should interact with the state and rules in Figure 2.
+- [x] When a follower's Raft code receives an InstallSnapshot RPC, it can use the `applyCh` to send the snapshot to the service in an `ApplyMsg`. The `ApplyMsg` struct definition already contains the fields you will need (and which the tester expects). 
+  - [x] Take care that these snapshots only advance the service's state, and don't cause it to move backwards.
+- [x] If a server crashes, it must restart from persisted data. Your Raft should persist both Raft state and the corresponding snapshot. Use `persister.SaveStateAndSnapshot()`, which takes separate arguments for the Raft state and the corresponding snapshot. If there's no snapshot, pass `nil` as the `snapshot` argument.
+
+### Hint
+
+- [x] `git pull` to make sure you have the latest software.
+- [x] A good place to start is to modify your code to so that it is able to store just the part of the log starting at some index X. Initially you can set X to zero and run the 2B/2C tests. Then make `Snapshot(index)` discard the log before `index`, and set X equal to `index`. If all goes well you should now pass the first 2D test.
+  - [x] You won't be able to store the log in a Go slice and use Go slice indices interchangeably with Raft log indices; you'll need to index the slice in a way that accounts for the discarded portion of the log.
+- [x] Next: have the leader send an InstallSnapshot RPC if it doesn't have the log entries required to bring a follower up to date.
+- [x] Send the entire snapshot in a single InstallSnapshot RPC. Don't implement Figure 13's `offset` mechanism for splitting up the snapshot.
+- [x] Raft must discard old log entries in a way that allows the Go garbage collector to free and re-use the memory; this requires that there be no reachable references (pointers) to the discarded log entries.
+- [x] Even when the log is trimmed, your implemention still needs to properly send the term and index of the entry prior to new entries in `AppendEntries` RPCs; this may require saving and referencing the latest snapshot's `lastIncludedTerm/lastIncludedIndex` (consider whether this should be persisted).
+- [x] A reasonable amount of time to consume for the full set of Lab 2 tests (2A+2B+2C+2D) without `-race` is 6 minutes of real time and one minute of CPU time. When running with `-race`, it is about 10 minutes of real time and two minutes of CPU time.
+
+
+
+# 6.824 Lab 3: Fault-tolerant Key/Value Service
+
+## TODO
+
+- [ ] raft返回leaderId
+
+## TODO_END
+
+### Introduction
+
+- [ ] In this lab you will build a fault-tolerant key/value storage service using your Raft library
+  - [ ] Your key/value service will be a replicated state machine, consisting of several key/value servers that use Raft for replication.
+- [ ] Clients can send three different RPCs to the key/value service: `Put(key, value)`, `Append(key, arg)`, and `Get(key)`. 
+  - [ ] The service maintains a simple database of key/value pairs. Keys and values are strings. 
+    - [ ] `Put(key, value)` replaces the value for a particular key in the database, 
+    - [ ] `Append(key, arg)` appends arg to key's value, and 
+    - [ ] `Get(key)` fetches the current value for the key. 
+    - [ ] A `Get` for a non-existent key should return an empty string. 
+    - [ ] An `Append` to a non-existent key should act like `Put`. 
+  - [ ] Each client talks to the service through a `Clerk` with Put/Append/Get methods. A `Clerk` manages RPC interactions with the servers.
+- [ ] **<u>*You should review the [extended Raft paper](https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf), in particular Sections 7 and 8.*</u>**
+
+### Getting Started
+
+- [ ] We supply you with skeleton code and tests in `src/kvraft`. 
+- [ ] You will need to modify `kvraft/client.go`, `kvraft/server.go`, and perhaps `kvraft/common.go`.
+
+## Part A: Key/value service without snapshots
+
+### A1
+
+- Each of your key/value servers ("*kvservers*") will have an associated *Raft* peer. 
+  - *Clerks* send `Put()`, `Append()`, and `Get()` RPCs to the *kvserver* whose associated *Raft* is the leader. The *kvserver* code submits the Put/Append/Get operation to *Raft*, so that the *Raft* log holds a sequence of Put/Append/Get operations. All of the *kvservers* execute operations from the *Raft* log in order, applying the operations to their key/value databases; the intent is for the servers to maintain identical replicas of the key/value database.
+  - A `Clerk` sometimes doesn't know which kvserver is the Raft leader. If the `Clerk` sends an RPC to the wrong kvserver, or if it cannot reach the kvserver, the `Clerk` should re-try by sending to a different kvserver.
+  - If the key/value service commits the operation to its Raft log (and hence applies the operation to the key/value state machine), the leader reports the result to the `Clerk` by responding to its RPC. If the operation failed to commit (for example, if the leader was replaced), the server reports an error, and the `Clerk` retries with a different server.
+  - Your kvservers should not directly communicate; they should only interact with each other through Raft.
+
+### Task1
+
+- [ ] Your first task is to implement a solution that works when there are no dropped messages, and no failed servers.
+- [ ] You'll need to 
+  - [x] add RPC-sending code to the Clerk Put/Append/Get methods in `client.go`, and 
+  - [x] implement `PutAppend()` and `Get()` RPC handlers in `server.go`. 
+    - [x] These handlers should enter an `Op` in the Raft log using `Start()`; 
+    - [x] you should fill in the `Op` struct definition in `server.go` so that it describes a Put/Append/Get operation. 
+    - [x] Each server should execute `Op` commands as Raft commits them, i.e. as they appear on the `applyCh`. 
+    - [x] An RPC handler should notice when Raft commits its `Op`, and then reply to the RPC.
+- [x] You have completed this task when you **reliably** pass the first test in the test suite: "One client".
+
+### Hint1
+
+- [x] After calling `Start()`, your kvservers will need to wait for Raft to complete agreement. Commands that have been agreed upon arrive on the `applyCh`. 
+  - [x] Your code will need to keep reading `applyCh` while `PutAppend()` and `Get()` handlers submit commands to the Raft log using `Start()`. Beware of deadlock between the kvserver and its Raft library.
+- [x] You are allowed to add fields to the Raft `ApplyMsg`, and to add fields to Raft RPCs such as `AppendEntries`, however this should not be necessary for most implementations.
+- [x] A kvserver should not complete a `Get()` RPC if it is not part of a majority (so that it does not serve stale data). A simple solution is to enter every `Get()` (as well as each `Put()` and `Append()`) in the Raft log. You don't have to implement the optimization for read-only operations that is described in Section 8.
+- [ ] ~~It's best to add locking from the start because the need to avoid deadlocks sometimes affects overall code design. Check that your code is race-free using `go test -race`.~~
+
+### A2
+
+- One problem you'll face is that a `Clerk` may have to send an RPC multiple times until it finds a kvserver that replies positively. 
+  - If a leader fails just after committing an entry to the Raft log, the `Clerk` may not receive a reply, and thus may re-send the request to another leader. 
+  - Each call to `Clerk.Put()` or `Clerk.Append()` should result in just a single execution, so you will have to ensure that the re-send doesn't result in the servers executing the request twice.
+
+### Task2
+
+- [ ] Add code to handle failures, and to cope with duplicate `Clerk` requests, including situations where 
+  - [ ] the `Clerk` sends a request to a kvserver leader in one term, times out waiting for a reply, and re-sends the request to a new leader in another term. The request should execute just once. 
+  - [ ] Your code should pass the `go test -run 3A -race` tests.
+
+### Hint
+
+- [x] Your solution needs to handle a leader that has called Start() for a Clerk's RPC, but loses its leadership before the request is committed to the log. In this case you should arrange for the Clerk to re-send the request to other servers until it finds the new leader. 
+  - [x] One way to do this is for the server to detect that it has lost leadership, by noticing 
+    - [x] that a different request has appeared at the index returned by Start(), 
+    - [ ] ~~or that Raft's term has changed.~~ 
+  - [x] If the ex-leader is partitioned by itself, it won't know about new leaders; but any client in the same partition won't be able to talk to a new leader either, so it's OK in this case for the server and client to wait indefinitely until the partition heals.
+- [x] You will probably have to modify your Clerk to remember which server turned out to be the leader for the last RPC, and send the next RPC to that server first. 
+  - [x] This will avoid wasting time searching for the leader on every RPC, which may help you pass some of the tests quickly enough.
+- [x] You will need to uniquely identify client operations to ensure that the key/value service executes each one just once.
+- [ ] ~~Your scheme for duplicate detection should free server memory quickly, for example by having each RPC imply that the client has seen the reply for its previous RPC. It's OK to assume that a client will make only one call into a Clerk at a time.~~
+
+
+
+
+
+
+
+
+
+
 
 
 

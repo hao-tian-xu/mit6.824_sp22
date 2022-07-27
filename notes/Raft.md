@@ -12,10 +12,11 @@
 - [x] 5.6: double check: Timing and availability
 - [x] aux: check role immediatly after a sleep (relationships between operations and role check?)
 
-- [x] Debug: TestRejoin2B (1/10)
-  - [x] backup quickly with a condition unaware: no log yet `lastLogIndex == 0`
+- [x] Debug: TestRejoin2B (1/10) --> backup quickly with a condition unaware: no log yet -- `lastLogIndex == 0`
 
-- [ ] as less parallelism as possible (especially log), sometimes use `defer`
+- [ ] as less parallelism as possible (especially log), sometimes use `defer` rather than `go`
+
+- [x] a place to make sure nextIndex is at least 1 --> no place to decrement it to less than 1
 
 
 
@@ -156,10 +157,6 @@ Posted on Mar 16, 2016
     - The leader has to be careful when processing replies; it 
       - must check that the term hasn't changed since sending the RPC, and 
       - must account for the possibility that replies from concurrent RPCs to the same follower have changed the leader's state (e.g. nextIndex).
-
-
-
-
 
 
 
