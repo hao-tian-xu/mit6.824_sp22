@@ -918,7 +918,7 @@ func (rf *Raft) candidate() {
 
 	rf.Unlock()
 
-	LogRaft(vBasic, tCandidate, rf.me, "C in T%v (candidate)\n", rf.currentTerm)
+	LogRaft(vBasic, tCandidate, rf.me, "C in T%v (candidate)\n", term)
 
 	// Candidates: Send RequestVote RPCs to all other servers
 	voteCounter := voteCounter{n: 1}
