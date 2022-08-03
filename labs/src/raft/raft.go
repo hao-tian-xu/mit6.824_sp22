@@ -86,6 +86,26 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+// Exported Methods:
+//
+// Make(...)
+//   create a new Raft server.
+//
+// Start(command interface{}) (index, term, isleader)
+//   start agreement on a new log entry
+// StartWithCurrentLeader(command interface{}) (index, term, isleader, currentLeader)
+//   wrapper for Start, also return currentLeader id
+//
+// Snapshot(index int, snapshot []byte)
+//   ask a Raft to trim its log until index
+//
+// GetState() (term, isLeader)
+//   ask a Raft for its current term, and whether it thinks it is leader
+// GetStateSize() stateSize
+//   ask a Raft for its current state size
+// GetSnapshot() snapshot []byte
+//   ask a Raft for its current snapshot
+//
 type Raft struct {
 	sync.Mutex                     // Lock to protect shared access to this peer's state
 	peers      []*labrpc.ClientEnd // RPC end points of all peers
@@ -226,12 +246,26 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.role == rLeader
 }
 
+func (rf *Raft) GetStateSize() int {
+	rf.Lock()
+	defer rf.Unlock()
+	return rf.persister.RaftStateSize()
+}
+
+func (rf *Raft) GetSnapshot() []byte {
+	rf.Lock()
+	defer rf.Unlock()
+	return rf.persister.ReadSnapshot()
+}
+
 // PERSIST
 
 //
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
+//
+// called with rf.Lock()
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
