@@ -101,10 +101,6 @@ type ApplyMsg struct {
 //
 // GetState() (term, isLeader)
 //   ask a Raft for its current term, and whether it thinks it is leader
-// GetStateSize() stateSize
-//   ask a Raft for its current state size
-// GetSnapshot() snapshot []byte
-//   ask a Raft for its current snapshot
 //
 type Raft struct {
 	sync.Mutex                     // Lock to protect shared access to this peer's state
@@ -244,18 +240,6 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.Lock()
 	defer rf.Unlock()
 	return rf.currentTerm, rf.role == rLeader
-}
-
-func (rf *Raft) GetStateSize() int {
-	rf.Lock()
-	defer rf.Unlock()
-	return rf.persister.RaftStateSize()
-}
-
-func (rf *Raft) GetSnapshot() []byte {
-	rf.Lock()
-	defer rf.Unlock()
-	return rf.persister.ReadSnapshot()
 }
 
 // PERSIST

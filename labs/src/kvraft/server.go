@@ -69,6 +69,8 @@ type KVServer struct {
 	lastOpMap map[int]LastOp    // save last processed Op for eache client
 	// channels for ApplyMsg transfer
 	applyOpChans map[int]chan Op
+
+	persister *raft.Persister
 }
 
 type LastOp struct {
@@ -259,7 +261,7 @@ func (kv *KVServer) receiveApplyMsg() {
 				}
 
 				// Take a snapshot if Raft state size is approaching maxraftstate
-				if kv.maxraftstate != _NA && kv.rf.GetStateSize() >= kv.maxraftstate {
+				if kv.maxraftstate != _NA && kv.persister.RaftStateSize() >= kv.maxraftstate {
 					LogKV(vBasic, tSnapshot, kv.me, "take snapshot%v (receiveApplyMsg)\n", applyMsg.CommandIndex)
 					kv.snapshot(applyMsg.CommandIndex)
 				}
@@ -346,8 +348,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyOpChans = map[int]chan Op{}
 
+	kv.persister = persister
+
 	// Use snapshot to recover
-	kv.readSnapshot(kv.rf.GetSnapshot())
+	kv.readSnapshot(kv.persister.ReadSnapshot())
 
 	// You may need initialization code here.
 	// Start receiving ApplyMsg from raft
