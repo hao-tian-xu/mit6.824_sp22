@@ -29,12 +29,6 @@ type Config struct {
 }
 
 const (
-	OK             = "OK"
-	ErrWrongLeader = "ErrWrongLeader"
-
-	ErrNotApplied = "ErrNotApplied"
-	ErrTimeout    = "ErrTimeout"
-
 	opQuery = "Query"
 	opJoin  = "Join"
 	opLeave = "Leave"

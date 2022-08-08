@@ -5,19 +5,20 @@ package shardctrler
 //
 
 import (
-	"6.824/debug"
 	"6.824/labrpc"
+	. "6.824/util"
+	"fmt"
 	"sync"
+	"time"
 )
-import "time"
 import "crypto/rand"
 import "math/big"
 
-var clientId = _NA
+var clientId = NA
 
 const (
 	rpcQuery = "ShardCtrler.Query"
-	rpcJoint = "ShardCtrler.Join"
+	rpcJoin  = "ShardCtrler.Join"
 	rpcLeave = "ShardCtrler.Leave"
 	rpcMove  = "ShardCtrler.Move"
 )
@@ -48,61 +49,70 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.nServers = len(servers)
 	ck.currentLeader = 0
 	ck.nextOpId = 0
-	debug.CtrlerClnt(vBasic, tClient, ck.me, "new client!\n")
+	LogCtrlerClnt(Basic, Client, ck.me, "new client!")
 	return ck
 }
 
-func (ck *Clerk) Query(num int) Config {
-	args := &QueryArgs{}
-	// Your code here.
-	args.Num = num
-
-	ck.Lock()
-	opId := ck.nextOpId
-	ck.nextOpId++
-	ck.Unlock()
-
-	return ck.sendOp(opId, args, rpcQuery)
-}
-
 func (ck *Clerk) Join(servers map[int][]string) {
-	args := &JoinArgs{}
 	// Your code here.
-	args.Servers = servers
-
 	ck.Lock()
 	opId := ck.nextOpId
 	ck.nextOpId++
 	ck.Unlock()
 
-	ck.sendOp(opId, args, rpcQuery)
+	args := &JoinArgs{Servers: servers,
+		ClientId: ck.me, OpId: opId}
+
+	ck._sendOp(opId, args, rpcJoin,
+		fmt.Sprintf("Join%v-%v %v", ck.me, opId, fmt.Sprint(groupsGids(servers))))
 }
 
 func (ck *Clerk) Leave(gids []int) {
-	args := &LeaveArgs{}
 	// Your code here.
-	args.GIDs = gids
-
 	ck.Lock()
 	opId := ck.nextOpId
 	ck.nextOpId++
 	ck.Unlock()
 
-	ck.sendOp(opId, args, rpcQuery)
+	args := &LeaveArgs{GIDs: gids,
+		ClientId: ck.me, OpId: opId}
+
+	ck._sendOp(opId, args, rpcLeave,
+		fmt.Sprintf("Leave%v-%v %v", ck.me, opId, fmt.Sprint(gids)))
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
-	args := &MoveArgs{}
 	// Your code here.
-	args.Shard = shard
-	args.GID = gid
-
 	ck.Lock()
 	opId := ck.nextOpId
 	ck.nextOpId++
 	ck.Unlock()
 
-	ck.sendOp(opId, args, rpcQuery)
+	args := &MoveArgs{Shard: shard, GID: gid,
+		ClientId: ck.me, OpId: opId}
+
+	ck._sendOp(opId, args, rpcMove,
+		fmt.Sprintf("Move%v-%v %v->%v", ck.me, opId, shard, gid))
+}
+
+func (ck *Clerk) Query(num int) Config {
+	// Your code here.
+	ck.Lock()
+	opId := ck.nextOpId
+	ck.nextOpId++
+	ck.Unlock()
+
+	args := &QueryArgs{Num: num,
+		ClientId: ck.me, OpId: opId}
+
+	return ck._sendOp(opId, args, rpcQuery,
+		fmt.Sprintf("Query%v-%v %v", ck.me, opId, num))
+}
+
+func (ck *Clerk) _sendOp(opId int, args interface{}, rpc string, format string) Config {
+	LogCtrlerClnt(Basic, Client, ck.me, "%v send!", format)
+	defer LogCtrlerClnt(Basic, Client, ck.me, "%v return!", format)
+	return ck.sendOp(opId, args, rpc)
 }
 
 func (ck *Clerk) sendOp(opId int, args interface{}, rpc string) Config {
@@ -117,45 +127,39 @@ func (ck *Clerk) sendOp(opId int, args interface{}, rpc string) Config {
 	// Process RPC reply
 	if ok {
 		// Send RPC successed
-		if reply.Err == OK {
+		switch reply.Err {
+		case OK:
 			return reply.Config
-		} else {
-			// other conditions: retry
-			if reply.Err == ErrWrongLeader {
-				if reply.CurrentLeader == _NA {
-					// server doesn't know currentLeader
-					ck.randomServer()
-					time.Sleep(_HeartBeatInterval)
-				} else {
-					ck.Lock()
-					if reply.CurrentLeader != ck.currentLeader {
-						ck.currentLeader = reply.CurrentLeader
-						ck.Unlock()
-					} else {
-						ck.Unlock()
-						ck.randomServer()
-					}
-				}
-			}
+		case ErrWrongLeader:
+			ck.changeLeader(reply.CurrentLeader)
+			LogCtrlerClnt(Verbose, Redo, ck.me, "resend: wrong leader... (sendOp)")
+		case ErrTimeout:
+			ck.changeLeader(NA)
+			LogCtrlerClnt(Verbose, Redo, ck.me, "resend: timeout... (sendOp)")
+		default:
+			LogCtrlerClnt(Verbose, Redo, ck.me, "resend: not applied... (sendOp)")
 		}
 	} else {
 		// Send RPC failed: retry
-		ck.randomServer()
-		time.Sleep(_HeartBeatInterval)
+		ck.changeLeader(NA)
+		LogCtrlerClnt(Verbose, Error, ck.me, "resend: send failed... (sendOp)")
 	}
 	return ck.sendOp(opId, args, rpc)
 }
 
 // HELPER
 
-//
-// change currentLeader to retry
-//
-func (ck *Clerk) randomServer() {
+func (ck *Clerk) changeLeader(leader int) {
 	ck.Lock()
-	ck.currentLeader++
-	if ck.currentLeader >= ck.nServers {
-		ck.currentLeader = 0
+	if leader == NA || leader == ck.currentLeader {
+		ck.currentLeader++
+		if ck.currentLeader >= ck.nServers {
+			ck.currentLeader = 0
+		}
+		ck.Unlock()
+		time.Sleep(HeartBeatsInterval)
+	} else {
+		ck.currentLeader = leader
+		ck.Unlock()
 	}
-	ck.Unlock()
 }

@@ -1,37 +1,16 @@
 package shardctrler
 
 import (
-	"6.824/debug"
 	"6.824/raft"
+	. "6.824/util"
+	"fmt"
+	"log"
 	"sort"
 	"time"
 )
 import "6.824/labrpc"
 import "sync"
 import "6.824/labgob"
-
-// CONST
-
-const (
-	_NA = -1
-
-	// log verbosity level
-	vBasic debug.Verbosity = iota
-	vVerbose
-	vExcessive
-
-	// log topic
-	tTrace    debug.Topic = "TRCE"
-	tError    debug.Topic = "ERRO"
-	tSnapshot debug.Topic = "SNAP"
-
-	tClient   debug.Topic = "CLNT"
-	tKVServer debug.Topic = "KVSR"
-
-	// timing
-	_MinInterval       = 10 * time.Millisecond
-	_HeartBeatInterval = 100 * time.Millisecond
-)
 
 // DATA TYPE
 
@@ -44,13 +23,13 @@ type ShardCtrler struct {
 	// Your data here.
 	configs []Config // indexed by config num
 
-	gidShardsMap map[int][]int
+	gidShards map[int][]int
 
-	lastOps      map[int]LastOp
-	applyOpChans map[int]chan Op
+	lastOps     map[int]*_LastOp     // clientId -> _LastOp
+	resultChans map[int]chan _Result // commandIndex -> chan _Result
 }
 
-type LastOp struct {
+type _LastOp struct {
 	Op          Op
 	QueryResult Config
 }
@@ -72,11 +51,36 @@ type Op struct {
 	OpId     int
 }
 
-func (op *Op) equal(op1 *Op) bool {
+func (op *Op) isSame(op1 *Op) bool {
 	if op.ClientId == op1.ClientId && op.OpId == op1.OpId {
 		return true
 	}
 	return false
+}
+
+func (op *Op) format() string {
+	var content string
+	switch op.OpType {
+	case opJoin:
+		content = fmt.Sprint(groupsGids(op.Servers))
+	case opLeave:
+		content = fmt.Sprint(op.GIDs)
+	case opMove:
+		content = fmt.Sprintf("%v->%v", op.Shard, op.GID)
+	case opQuery:
+		content = fmt.Sprint(op.Num)
+	}
+	return fmt.Sprintf("%v%v-%v %v", op.OpType, op.ClientId, op.OpId, content)
+}
+
+//
+// transfer op result among methods
+//
+type _Result struct {
+	err    Err
+	config Config
+	opType string
+	op     *Op
 }
 
 // RPC
@@ -85,35 +89,39 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *OpReply) {
 	// Your code here.
 	op := &Op{OpType: opJoin, Servers: args.Servers,
 		ClientId: args.ClientId, OpId: args.OpId}
-	sc.processOp(opJoin, op, reply)
+	sc.processOp(op, reply)
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *OpReply) {
 	// Your code here.
 	op := &Op{OpType: opLeave, GIDs: args.GIDs,
 		ClientId: args.ClientId, OpId: args.OpId}
-	sc.processOp(opLeave, op, reply)
+	sc.processOp(op, reply)
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *OpReply) {
 	// Your code here.
 	op := &Op{OpType: opMove, Shard: args.Shard, GID: args.GID,
 		ClientId: args.ClientId, OpId: args.OpId}
-	sc.processOp(opMove, op, reply)
+	sc.processOp(op, reply)
 }
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *OpReply) {
 	// Your code here.
 	op := &Op{OpType: opQuery, Num: args.Num,
 		ClientId: args.ClientId, OpId: args.OpId}
-	sc.processOp(opQuery, op, reply)
+	sc.processOp(op, reply)
 }
 
-func (sc *ShardCtrler) processOp(join string, op *Op, reply *OpReply) {
+//
+// process Op and set RPC reply
+//
+func (sc *ShardCtrler) processOp(op *Op, reply *OpReply) {
 	sc.mu.Lock()
 	// If op is the same as lastOp
-	if lastOp, ok := sc.lastOps[op.ClientId]; ok && op.equal(&lastOp.Op) {
+	if lastOp, ok := sc.lastOps[op.ClientId]; ok && op.isSame(&lastOp.Op) {
 		sc.mu.Unlock()
+		LogCtrler(Verbose, Warn, sc.me, "%v already processed... (processOp)\n", op.format())
 		reply.Err, reply.Config = OK, lastOp.QueryResult
 		return
 	}
@@ -123,25 +131,53 @@ func (sc *ShardCtrler) processOp(join string, op *Op, reply *OpReply) {
 	//		if not isLeader
 	if !isLeader {
 		sc.mu.Unlock()
+		LogCtrler(Verbose, Warn, sc.me, "notLeader... (processOp)")
 		reply.Err, reply.CurrentLeader = ErrWrongLeader, currentLeader
 		return
 	}
 
-	// make a channel for Op transfer, if not existing
-	if _, ok := sc.applyOpChans[commandIndex]; !ok {
-		sc.applyOpChans[commandIndex] = make(chan Op)
+	// Make a channel for _Result transfer, if not existing
+	if _, ok := sc.resultChans[commandIndex]; !ok {
+		sc.resultChans[commandIndex] = make(chan _Result)
 	}
 	sc.mu.Unlock()
 
 	// Wait for the op to be applied
-	applied := sc.waitApply(commandIndex, op)
-
-	switch applied {
-	// TODO
-	}
+	result := sc.waitApply(commandIndex, op)
+	reply.Err, reply.Config = result.err, result.config
 }
 
-// FOR TESTER
+//
+// wait for the commandIndex to be applied, return true if it's the same op
+//
+func (sc *ShardCtrler) waitApply(commandIndex int, op *Op) _Result {
+	sc.mu.Lock()
+	ch := sc.resultChans[commandIndex]
+	sc.mu.Unlock()
+	// Wait for the commandIndex to be commited in raft and applied in kvserver
+	result := _Result{}
+	select {
+	case result = <-ch:
+		if op.isSame(result.op) {
+			switch result.err {
+			case OK:
+				LogCtrler(Basic, Ctrler, sc.me, "log%v: %v applied! (waitApply)", commandIndex, op.format())
+			}
+		} else {
+			// different op with the index applied
+			LogCtrler(Basic, Warn, sc.me, "other log%v applied... (%v /waitApply)\n", commandIndex, op.format())
+			result.err = ErrNotApplied
+		}
+	case <-time.After(HeartBeatsInterval * 5):
+		// waitApply timeout
+		LogCtrler(Basic, Warn, sc.me, "log%v: %v timeout... (waitApply)\n", commandIndex, op.format())
+		result.err = ErrTimeout
+	}
+
+	return result
+}
+
+// TESTER ONLY
 
 //
 // the tester calls Kill() when a ShardCtrler instance won't
@@ -154,7 +190,9 @@ func (sc *ShardCtrler) Kill() {
 	// Your code here, if desired.
 }
 
+//
 // needed by shardkv tester
+//
 func (sc *ShardCtrler) Raft() *raft.Raft {
 	return sc.rf
 }
@@ -162,254 +200,241 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 // APPLY_MSG
 
 //
-// wait for the commandIndex to be applied, return true if it's the same op
-//
-func (sc *ShardCtrler) waitApply(commandIndex int, op *Op) Err {
-	sc.mu.Lock()
-	ch := sc.applyOpChans[commandIndex]
-	sc.mu.Unlock()
-	// Wait for the commandIndex to be commited in raft and applied in kvserver
-	select {
-	case appliedOp := <-ch:
-		if op.equal(&appliedOp) {
-			// return OK if it's the same op
-			return OK
-		} else {
-			// different op with the index applied
-			return ErrNotApplied
-		}
-	case <-time.After(_HeartBeatInterval * 5):
-		// waitApply timeout
-		return ErrTimeout
-	}
-}
-
-//
-// iteratively receive ApplyMsg from raft and apply it to the kvserver, notify relevant RPC (leader server)
+// Iteratively receive ApplyMsg from raft and apply it to the kvserver,
+// notify relevant RPC (leader server)
 //
 func (sc *ShardCtrler) receiveApplyMsg() {
 	var applyMsg raft.ApplyMsg
 	for {
-		// Recieve ApplyMsg from raft
 		applyMsg = <-sc.applyCh
-		// if ApplyMsg is a command
+		// If ApplyMsg is a command
 		if applyMsg.CommandValid {
 			sc.mu.Lock()
-			// map command to Op
+
+			result := _Result{}
 			op := applyMsg.Command.(Op)
-			// command is not processed
-			if lastOp, started := sc.lastOps[op.ClientId]; !started || !op.equal(&lastOp.Op) {
+			// If command is not processed
+			if lastOp, started := sc.lastOps[op.ClientId]; !started || !op.isSame(&lastOp.Op) {
+				result.err = OK
 				// Apply the command to shard controller
 				switch op.OpType {
 				case opJoin:
-					// if no group yet
-					start := false
-					if len(sc.configs[sc.now()].Groups) == 0 {
-						start = true
-					}
-					// add new groups
-					nextConfig := sc.makeNextConfig()
-					for k, v := range op.Servers {
-						nextConfig.Groups[k] = v
-						sc.gidShardsMap[k] = []int{}
-					}
-					// if no group yet, add all shards to a group
-					if start {
-						gidMin, _ := sc.findMinMaxGid()
-						sc.gidShardsMap[gidMin] = make([]int, NShards)
-						for i := 0; i < NShards; i++ {
-							sc.gidShardsMap[gidMin][i] = i
-						}
-					}
-					// rebalance and add config
-					sc.rebalance(&nextConfig.Shards)
-					sc.configs = append(sc.configs, nextConfig)
+					sc.applyJoin(&op)
 				case opLeave:
-
+					sc.applyLeave(&op)
+				case opMove:
+					sc.applyMove(&op)
+				case opQuery:
+					if op.Num != -1 && op.Num <= sc.now() {
+						result.config = sc.configs[op.Num]
+					} else {
+						result.config = sc.configs[sc.now()]
+					}
 				}
+				// Remember lastOp for each client
+				sc.lastOps[op.ClientId] = &_LastOp{op, result.config}
+				// log
+				LogCtrler(Basic, Apply, sc.me, "%v applied!", op.format())
+				// debug
+				sc.logGidShards()
 			} else {
-				// TODO: log
+				result.err = ErrDuplicate
+				LogCtrler(Basic, Warn, sc.me, "%v already processed... (receiveApplyMsg)\n", op.format())
 			}
-			ch, ok := sc.applyOpChans[applyMsg.CommandIndex]
+
+			ch, ok := sc.resultChans[applyMsg.CommandIndex]
 			sc.mu.Unlock()
 
-			// Send Op to RPC if relevant channel exists
 			if ok {
+				// Send Op to RPC if relevant channel exists
+				result.op = &op
 				select {
-				case ch <- op:
-				case <-time.After(_MinInterval):
+				case ch <- result:
+				case <-time.After(MinInterval):
 				}
 			}
 		}
 	}
 }
 
-func (sc *ShardCtrler) joinAndRebalance(newGroups map[int][]string) {
-	oldGroups := sc.configs[sc.now()].Groups
+func (sc *ShardCtrler) applyJoin(op *Op) {
+	// if no group yet
+	start := false
+	if len(sc.configs[sc.now()].Groups) == 0 {
+		start = true
+	}
+	// add new groups
+	newConfig := sc.makeNewConfig()
+	for k, v := range op.Servers {
+		newConfig.Groups[k] = v
+		sc.gidShards[k] = []int{}
+	}
+	// if no group yet, add all shards to a group
+	if start {
+		gidMin, _ := sc.findMinMaxGid()
+		sc.gidShards[gidMin] = make([]int, NShards)
+		for i := 0; i < NShards; i++ {
+			sc.gidShards[gidMin][i] = i
+		}
+	}
+	// rebalance and add new config
+	sc.rebalance(&newConfig.Shards)
+	sc.configs = append(sc.configs, *newConfig)
+}
 
-	sortedGidShards := makeSortedGidShards(sc.configs[sc.now()])
+func (sc *ShardCtrler) applyLeave(op *Op) {
+	newConfig := sc.makeNewConfig()
+	// remove groups, remember their shards
+	removedGidShards := map[int][]int{}
+	for _, gid := range op.GIDs {
+		delete(newConfig.Groups, gid)
+		removedGidShards[gid] = sc.gidShards[gid]
+		delete(sc.gidShards, gid)
+	}
+	if len(newConfig.Groups) == 0 {
+		// All groups left
+		for i := 0; i < NShards; i++ {
+			newConfig.Shards[i] = 0
+		}
+	} else {
+		// add shards of removed groups to a remaing group,
+		//  should be deterministic
+		gidMin, _ := sc.findMinMaxGid()
+		gids := make([]int, 0)
+		for _, v := range removedGidShards {
+			gids = append(gids, v...)
+		}
+		sort.Ints(gids)
+		sc.gidShards[gidMin] = append(sc.gidShards[gidMin], gids...)
+		// rebalance
+		sc.rebalance(&newConfig.Shards)
+	}
+	// add new config
+	sc.configs = append(sc.configs, *newConfig)
+}
 
-	sizeS, _, sizeL, numL := configStat(len(oldGroups) + len(newGroups))
-
-	// move shards to new groups
-	shards := sc.configs[sc.now()].Shards
-	newGids := mapToSlice(newGroups)
-	newGidInd := 0
-	numLRemain := numL
-	for _, gidShards := range sortedGidShards {
-		var moveNum int
-		groupSize := len(gidShards.shards)
-		if groupSize > sizeS {
-			if numLRemain > 0 {
-				moveNum = groupSize - sizeL
-				numLRemain--
-			} else {
-				moveNum = groupSize - sizeS
-			}
-			for i := 0; i < moveNum; i++ {
-				shards[gidShards.shards[i]] = newGids[newGidInd]
-				newGidInd++
-				if newGidInd >= len(newGids) {
-					newGidInd = 0
-				}
+func (sc *ShardCtrler) applyMove(op *Op) {
+	newConfig := sc.makeNewConfig()
+	// find and remove shard from prev group
+out:
+	for gid, shards := range sc.gidShards {
+		for ind, shard := range shards {
+			if shard == op.Shard {
+				sc.gidShards[gid] = append(shards[:ind], shards[ind+1:]...) // TODO: maybe problematic
+				break out
 			}
 		}
 	}
+	// add shard to new group
+	sc.gidShards[op.GID] = append(sc.gidShards[op.GID], op.Shard)
+	newConfig.Shards[op.Shard] = op.GID
+	// add new config
+	sc.configs = append(sc.configs, *newConfig)
+}
 
-	// add new servers to groups
-	groups := copyGroups(oldGroups)
-	for k, v := range newGroups {
-		groups[k] = v
+// ShardCtrler Helpers, called with sc.mu.Lock()
+
+//
+// Make a new Config with current Shards and Groups
+//
+func (sc *ShardCtrler) makeNewConfig() *Config {
+	config := Config{}
+	config.Num = sc.now() + 1
+	config.Groups = map[int][]string{}
+	config.Shards = sc.configs[sc.now()].Shards
+	for k, v := range sc.configs[sc.now()].Groups {
+		config.Groups[k] = v
 	}
-
-	// append new config
-	num := sc.now()+1
-	sc.configs = append(sc.configs, Config{num, shards, groups})
+	return &config
 }
 
 //
-// calculate group size (number of shards), and how many groups are with the size
+// Rebalance ShardCtrler.gidShards, apply the result to new Config.Shards
 //
-// return (size of an S group, number of S groups, size of an L group, number of L groups)
-//
-func configStat(configVol int) (int, int, int, int) {
-
-}
-
-
-func mapToSlice(servers map[int][]string) []int {
-
-}
-
-//
-// make a map from gid to shards they handle,
-// sorted by number of shards and gid (large to small)
-//
-// field shards is also sorted
-//
-func makeSortedGidShards(c Config) []gidShards {
-
-}
-
-type gidShards struct {
-	gid int
-	shards []int
+func (sc *ShardCtrler) rebalance(shardGids *[NShards]int) {
+	// iteratively move a shard from gidMax to gidMin
+	var shard int
+	for {
+		gidMin, gidMax := sc.findMinMaxGid()
+		minGidShards, maxGidShards := sc.gidShards[gidMin], sc.gidShards[gidMax]
+		if len(maxGidShards)-len(minGidShards) <= 1 {
+			break
+		}
+		lastInd := len(maxGidShards) - 1
+		shard, sc.gidShards[gidMax] = maxGidShards[lastInd], maxGidShards[0:lastInd]
+		sc.gidShards[gidMin] = append(minGidShards, shard)
+	}
+	// apply the result to shardGids
+	for gid, shards := range sc.gidShards {
+		for _, shard := range shards {
+			shardGids[shard] = gid
+		}
+	}
 }
 
 //
-// must be called with sc.mu.Lock()
+// In ShardCtrler.gidShards, find gid with minimal number of shards
+// and maximal number of shards. The function is deterministic.
+//
+// return (gidMin, gidMax)
+//
+func (sc *ShardCtrler) findMinMaxGid() (int, int) {
+	gidMin, gidMax := NA, NA
+	sizeMin, sizeMax := NShards+1, -1
+	for gid, shards := range sc.gidShards {
+		if len(shards) < sizeMin {
+			sizeMin = len(shards)
+			gidMin = gid
+		} else if len(shards) == sizeMin && gid < gidMin {
+			// deterministic
+			gidMin = gid
+		}
+		if len(shards) > sizeMax {
+			sizeMax = len(shards)
+			gidMax = gid
+		} else if len(shards) == sizeMax && gid > gidMax {
+			// deterministic
+			gidMax = gid
+		}
+	}
+	return gidMin, gidMax
+}
+
+//
+// return current Config index
 //
 func (sc *ShardCtrler) now() int {
 	return len(sc.configs) - 1
 }
 
+// DEBUG
+
+//
+// for debug only
 //
 // must be called with sc.mu.Lock()
 //
-func (sc *ShardCtrler) _rebalance() {
-	currConfig, lastConfig := sc.configs[sc.now()], sc.configs[sc.now()-1]
-	currConfigSize, lastConfigSize := len(currConfig.Groups), len(lastConfig.Groups)
-
-	gidSizes := make(map[int]int, currConfigSize)
-
-	oldGids := make([]int, lastConfigSize)
-	i := 0
-	for k, _ := range lastConfig.Groups {
-		oldGids[0] = k
-		i++
-	}
-	sort.Ints(oldGids)
-
-	if currConfigSize > lastConfigSize {
-		newGids := make([]int, currConfigSize-lastConfigSize)
-		i := 0
-		for k, _ := range currConfig.Groups {
-			if _, ok := lastConfig.Groups[k]; !ok {
-				newGids[i] = k
-				i++
-			}
-		}
-		sort.Ints(newGids)
-
-		sort.Slice(newGids, less)
-
-		smallGroupSize := NShards / currConfigSize
-		largeGroupNum := NShards % currConfigSize
-		largeGroupSize := smallGroupSize + 1
-		smallGroupNum := currConfigSize - largeGroupNum
-
-		for i, v := range lastConfig.Shards {
-			gidSizes[v] += 1
-			if gidSizes[v] <= smallGroupSize {
-				currConfig.Shards[i] = v
-				continue
-			}
-			if gidSizes[v] == largeGroupSize {
-				if largeGroupNum > 0 {
-					currConfig.Shards[i] = v
-					largeGroupNum -= 1
-					continue
-				} else {
-
-				}
-			}
-			if
-		}
-	}
-
-	var currentGids, lastGids []int
-
-	for k, _ := range lastConfig.Groups {
-		lastGids = append(lastGids, k)
-		sort.Ints(lastGids)
-	}
-	for k, _ := range currConfig.Groups {
-		if _, ok := lastGids[k]; !ok {
-			currentGids = append(currentGids, k)
-		}
+func (sc *ShardCtrler) logGidShards() {
+	config := sc.configs[sc.now()]
+	LogCtrler(Stale, Trace, sc.me, "shards%v: %v (receiveApplyMsg)\n",
+		config.Num, fmt.Sprint(config.Shards))
+	LogCtrler(Stale, Trace, sc.me, "groups%v: %v (receiveApplyMsg)\n",
+		config.Num, fmt.Sprint(groupsGids(config.Groups)))
+	LogCtrler(Stale, Trace, sc.me, "gidShards%v: %v (receiveApplyMsg)\n",
+		config.Num, fmt.Sprint(sc.gidShards))
+	if len(config.Groups) != len(sc.gidShards) {
+		log.Fatalln("Groups != gidShards!!!")
 	}
 }
 
-func (sc *ShardCtrler) makeNextConfig() Config {
-	// TODO
-	return Config{}
-}
+// HELPER
 
-func (sc *ShardCtrler) findMinMaxGid() (int, int) {
-	// TODO
-	return _NA, _NA
-}
-
-func (sc *ShardCtrler) rebalance(shards *[NShards]int) {
-	// TODO
-}
-
-func copyGroups(groups map[int][]string) map[int][]string {
-	newGroups := make(map[int][]string)
-	for k, v := range groups {
-		newGroups[k] = v
+func groupsGids(groups map[int][]string) []int {
+	gids := make([]int, 0)
+	for gid, _ := range groups {
+		gids = append(gids, gid)
 	}
-	return newGroups
+	return gids
 }
 
 // START
@@ -432,10 +457,10 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 
 	// Your code here.
-	sc.gidShardsMap = map[int][]int{}
+	sc.gidShards = map[int][]int{}
 
-	sc.lastOps = map[int]LastOp{}
-	sc.applyOpChans = map[int]chan Op{}
+	sc.lastOps = map[int]*_LastOp{}
+	sc.resultChans = map[int]chan _Result{}
 
 	// Start receiving ApplyMsg from raft
 	go sc.receiveApplyMsg()

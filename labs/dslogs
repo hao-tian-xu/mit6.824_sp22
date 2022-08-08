@@ -12,19 +12,24 @@ import typer
 # fmt: off
 # Mapping from topics to colors
 TOPICS = {
-    "ERRO": "dark_red",
-    "LEAD": "bright_cyan",
-    "CAND": "bright_cyan",
-    "DEMO": "black",
-    "TERM": "green",
-    "LOG0": "blue",
-    "LOG1": "cyan",
-    "CMIT": "bright_black",
-    "SNAP": "bright_black",
-    "TRCE": "bright_white",
+    "LEAD": "bright_cyan",  # raft leader
+    "CAND": "bright_cyan",  # raft candidate
+    "DEMO": "black",        # raft demotion
+    "TERM": "green",        # raft term
+    "LOG0": "blue",         # raft log fail
+    "LOG1": "cyan",         # raft log success
+    "CMIT": "bright_black", # raft commit
+    "APLY": "white",        # server apply
+    "SNAP": "white",        # server snapshot
 
-    "CLNT": "magenta",
-    "KVSR": "yellow",
+    "REDO": "dark_red",     # resend
+    "TRCE": "bright_white", # trace
+    "ERRO": "dark_red",     # error
+    "WARN": "bright_red",   # warn
+
+    "CLNT": "magenta",      # client
+    "KVSR": "yellow",       # kvserver
+    "CTLR": "yellow",       # shard controller
 }
 # fmt: on
 

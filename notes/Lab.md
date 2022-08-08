@@ -210,15 +210,15 @@
 
 
 
-# 6.824 Lab 3: Fault-tolerant Key/Value Service
+# Lab 3: Fault-tolerant Key/Value Service
 
 ## TODO
 
-- [ ] raft返回leaderId
+- [x] raft返回leaderId
 
 ### Speed
 
-- [ ] 减少raft的并发
+- [x] 减少raft的并发
 
 ```shell
 tian@Haotians-MBP raft % go test
@@ -357,17 +357,50 @@ ok      6.824/raft      499.867s
 
 
 
+# Lab 4: Sharded Key/Value Service
 
+## Part A: The Shard controller (30 points)
 
+- [ ] First you'll implement the shard controller, in `shardctrler/server.go` and `client.go`. 
+- [ ] When you're done, you should pass all the tests in the `shardctrler` directory
 
+### Task
 
+- The shardctrler manages a sequence of numbered configurations. 
+  - Each configuration describes a set of replica groups and an assignment of shards to replica groups. 
+  - Whenever this assignment needs to change, the shard controller creates a new configuration with the new assignment. 
+  - Key/value clients and servers contact the shardctrler when they want to know the current (or a past) configuration.
+- Your implementation must support the RPC interface described in `shardctrler/common.go`, which consists of `Join`, `Leave`, `Move`, and `Query` RPCs. These RPCs are intended to allow an administrator (and the tests) to control the shardctrler: to add new replica groups, to eliminate replica groups, and to move shards between replica groups.
+  - The `Join` RPC is used by an administrator to add new replica groups. Its argument is a set of mappings from unique, non-zero replica group identifiers (GIDs) to lists of server names. The shardctrler should react by creating a new configuration that includes the new replica groups. 
+    - The new configuration should divide the shards as evenly as possible among the full set of groups, and should move as few shards as possible to achieve that goal. 
+    - The shardctrler should allow re-use of a GID if it's not part of the current configuration (i.e. a GID should be allowed to Join, then Leave, then Join again).
+  - The `Leave` RPC's argument is a list of GIDs of previously joined groups. The shardctrler should create a new configuration that does not include those groups, and that assigns those groups' shards to the remaining groups. 
+    - The new configuration should divide the shards as evenly as possible among the groups, and should move as few shards as possible to achieve that goal.
+  - The `Move` RPC's arguments are a shard number and a GID. The shardctrler should create a new configuration in which the shard is assigned to the group. 
+    - The purpose of `Move` is to allow us to test your software. A `Join` or `Leave` following a `Move` will likely un-do the `Move`, since `Join` and `Leave` re-balance.
+  - The `Query` RPC's argument is a configuration number. The shardctrler replies with the configuration that has that number. 
+    - If the number is -1 or bigger than the biggest known configuration number, the shardctrler should reply with the latest configuration. 
+    - The result of `Query(-1)` should reflect every `Join`, `Leave`, or `Move` RPC that the shardctrler finished handling before it received the `Query(-1)` RPC.
+- The very first configuration should be numbered zero. It should contain no groups, and all shards should be assigned to GID zero (an invalid GID). 
+  - The next configuration (created in response to a `Join` RPC) should be numbered 1, &c. 
+  - There will usually be significantly more shards than groups (i.e., each group will serve more than one shard), in order that load can be shifted at a fairly fine granularity.
 
+### Task
 
+- [ ] Your task is to implement the interface specified above in `client.go` and `server.go` in the `shardctrler/` directory. 
+  - [ ] Your shardctrler must be fault-tolerant, using your Raft library from Lab 2/3. 
+  - [ ] Note that we will re-run the tests from Lab 2 and 3 when grading Lab 4, so make sure you do not introduce bugs into your Raft implementation. 
+- [ ] You have completed this task when you pass all the tests in `shardctrler/`.
 
+### Hint
 
-
-
-
+- [ ] Start with a stripped-down copy of your kvraft server.
+- [ ] You should implement duplicate client request detection for RPCs to the shard controller. 
+  - [ ] The shardctrler tests don't test this, but the shardkv tests will later use your shardctrler on an unreliable network; you may have trouble passing the shardkv tests if your shardctrler doesn't filter out duplicate RPCs.
+- [ ] The code in your state machine that performs the shard rebalancing needs to be deterministic. 
+  - [ ] In Go, map iteration order is [not deterministic](https://blog.golang.org/maps#TOC_7.).
+- [ ] Go maps are references. If you assign one variable of type map to another, both variables refer to the same map. Thus if you want to create a new `Config` based on a previous one, you need to create a new map object (with `make()`) and copy the keys and values individually.
+- [ ] The Go race detector (go test -race) may help you find bugs.
 
 
 
