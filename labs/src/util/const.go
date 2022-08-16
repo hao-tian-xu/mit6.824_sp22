@@ -7,7 +7,12 @@ const (
 
 	// timing
 	MinInterval        = 10 * time.Millisecond
-	HeartBeatsInterval = 100 * time.Millisecond
+	HeartBeatsInterval = 50 * time.Millisecond
+
+	// raft role
+	Leader    = "Leader"
+	Candidate = "Candidate"
+	Follower  = "Follower"
 
 	// server err
 	OK             = "OK"

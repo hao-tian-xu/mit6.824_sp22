@@ -12,9 +12,10 @@ import typer
 # fmt: off
 # Mapping from topics to colors
 TOPICS = {
-    "LEAD": "bright_cyan",  # raft leader
+    "LEAD": "yellow",  # raft leader
     "CAND": "bright_cyan",  # raft candidate
     "DEMO": "black",        # raft demotion
+    "VOTE": "dark_cyan",    # raft vote (TODO change color)
     "TERM": "green",        # raft term
     "LOG0": "blue",         # raft log fail
     "LOG1": "cyan",         # raft log success
