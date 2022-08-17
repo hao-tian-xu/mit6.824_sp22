@@ -108,6 +108,147 @@ type Raft struct {
 	electionTimeout time.Time // timeout to start election
 }
 
+// INTERFACE
+
+//
+// return currentTerm and whether this server
+// believes it is the leader.
+//
+func (rf *Raft) GetState() (int, bool) {
+	// Your code here (2A).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.currentTerm, rf.role == Leader
+}
+
+//
+// the service using Raft (e.g. a k/v server) wants to start
+// agreement on the next command to be appended to Raft's log. if this
+// server isn't the leader, returns false. otherwise start the
+// agreement and return immediately. there is no guarantee that this
+// command will ever be committed to the Raft log, since the leader
+// may fail or lose an election. even if the Raft instance has been killed,
+// this function should return gracefully.
+//
+// the first return value is the index that the command will appear at
+// if it's ever committed. the second return value is the current
+// term. the third return value is true if this server believes it is
+// the leader.
+//
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	index := -1
+	term := -1
+	isLeader := true
+
+	// Your code here (2B).
+
+	return index, term, isLeader
+}
+
+// Snapshot
+
+//
+// the service says it has created a snapshot that has
+// all info up to and including index. this means the
+// service no longer needs the log through (and including)
+// that index. Raft should now trim its log as much as possible.
+//
+func (rf *Raft) Snapshot(index int, snapshot []byte) {
+	// Your code here (2D).
+
+}
+
+//
+// A service wants to switch to snapshot.  Only do so if Raft hasn't
+// have more recent info since it communicate the snapshot on applyCh.
+//
+func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
+
+	// Your code here (2D).
+
+	return true
+}
+
+// RequestVote RPC Handler
+
+//
+// Invoked by candidates to gather votes (§5.2).
+//
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// All Servers:
+	//	If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
+	if args.Term > rf.currentTerm {
+		rf.becomeFollowerLck(args.Term)
+	}
+
+	// 5.4.1 Election restriction: If the logs have last entries with different terms,
+	//	then the log with the later term is more up-to-date.
+	//	If the logs end with the same term, then whichever log is longer is more up-to-date.
+	upToDate := args.LastLogTerm > rf.lastLogTermLck() ||
+		(args.LastLogTerm == rf.lastLogTermLck() && args.LastLogIndex >= rf.lastLogIndexLck())
+
+	LogRaft(VBasic, TVote, rf.me, "voteRequest from %v: lastLog i%v/t%v, voteFor %v (RequestVote)",
+		args.CandidateId, rf.lastLogIndexLck(), rf.lastLogTermLck(), rf.votedFor)
+
+	reply.Term = rf.currentTerm
+	// Receiver implementation:
+	//	1. Reply false if term < currentTerm (§5.1)
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+		return
+	}
+	//	2. If votedFor is null or candidateId, and candidate’s log is
+	//		at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+	if (rf.votedFor == NA || rf.votedFor == args.CandidateId) && upToDate {
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId
+		// Followers (§5.2):
+		//	If election timeout elapses without receiving AppendEntries RPC from
+		//		current leader or granting vote to candidate: convert to candidate
+		rf.resetElectionTimeoutLck(false)
+	}
+}
+
+// AppendEntries RPC Handler
+
+//
+// Invoked by leader to replicate log entries (§5.3); also used as heartbeat (§5.2).
+//
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	LogRaft(VBasic, TAppend, rf.me, "appendEntries from %v (AppendEntries)", args.LeaderId)
+
+	// All Servers:
+	//	If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
+	if args.Term > rf.currentTerm {
+		rf.becomeFollowerLck(args.Term)
+	}
+
+	// Candidates (§5.2):
+	//	If AppendEntries RPC received from new leader: convert to follower
+	if rf.role == Candidate && rf.currentTerm <= args.Term {
+		rf.becomeFollowerLck(args.Term)
+	}
+
+	// Receiver implementation:
+	//	1. Reply false if term < currentTerm (§5.1)
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		return
+	}
+
+	// Followers (§5.2):
+	//	If election timeout elapses without receiving AppendEntries RPC from
+	//		current leader or granting vote to candidate: convert to candidate
+	rf.resetElectionTimeoutLck(false)
+}
+
 // RAFT HELPER METHODS
 
 func (rf *Raft) init(peers []*labrpc.ClientEnd, me int, persister *Persister, ch chan ApplyMsg) {
@@ -151,15 +292,6 @@ func (rf *Raft) lastLogTermLck() int {
 	return rf.log[len(rf.log)-1].Term
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
-func (rf *Raft) GetState() (int, bool) {
-	// Your code here (2A).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return rf.currentTerm, rf.role == Leader
-}
-
 // PERSISTOR
 
 //
@@ -200,145 +332,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-// SNAPSHOT
-
-//
-// A service wants to switch to snapshot.  Only do so if Raft hasn't
-// have more recent info since it communicate the snapshot on applyCh.
-//
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
-	return true
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
-}
-
-// REQUEST VOTE RPC HANDLER
-
-// Invoked by candidates to gather votes (§5.2).
-
-//
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	// All Servers:
-	//	If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-	if args.Term > rf.currentTerm {
-		rf.becomeFollowerLck(args.Term)
-	}
-
-	// 5.4.1 Election restriction: If the logs have last entries with different terms,
-	//	then the log with the later term is more up-to-date.
-	//	If the logs end with the same term, then whichever log is longer is more up-to-date.
-	upToDate := args.LastLogTerm > rf.lastLogTermLck() ||
-		(args.LastLogTerm == rf.lastLogTermLck() && args.LastLogIndex >= rf.lastLogIndexLck())
-
-	LogRaft(VBasic, TVote, rf.me, "voteRequest from %v: lastLog i%v/t%v, voteFor %v (RequestVote)",
-		args.CandidateId, rf.lastLogIndexLck(), rf.lastLogTermLck(), rf.votedFor)
-
-	reply.Term = rf.currentTerm
-	// Receiver implementation:
-	//	1. Reply false if term < currentTerm (§5.1)
-	if args.Term < rf.currentTerm {
-		reply.VoteGranted = false
-		return
-	}
-	//	2. If votedFor is null or candidateId, and candidate’s log is
-	//		at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
-	if (rf.votedFor == NA || rf.votedFor == args.CandidateId) && upToDate {
-		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
-		// Followers (§5.2):
-		//	If election timeout elapses without receiving AppendEntries RPC from
-		//		current leader or granting vote to candidate: convert to candidate
-		rf.resetElectionTimeoutLck(false)
-	}
-}
-
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	LogRaft(VBasic, TCandidate, rf.me, "requestVote from %v: %v (sendRequestVote)", server, args)
-
-	return rf.peers[server].Call(rpcRequestVote, args, reply)
-}
-
-// APPEND ENTRIES RPC HANDLER
-
-// Invoked by leader to replicate log entries (§5.3); also used as heartbeat (§5.2).
-
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	// All Servers:
-	//	If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-	if args.Term > rf.currentTerm {
-		rf.becomeFollowerLck(args.Term)
-	}
-
-	// Candidates (§5.2):
-	//	If AppendEntries RPC received from new leader: convert to follower
-	if rf.role == Candidate && rf.currentTerm <= args.Term {
-		rf.becomeFollowerLck(args.Term)
-	}
-
-	// Receiver implementation:
-	//	1. Reply false if term < currentTerm (§5.1)
-	if args.Term < rf.currentTerm {
-		reply.Success = false
-		return
-	}
-
-	// Followers (§5.2):
-	//	If election timeout elapses without receiving AppendEntries RPC from
-	//		current leader or granting vote to candidate: convert to candidate
-	rf.resetElectionTimeoutLck(false)
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	LogRaft(VBasic, TLeader, rf.me, "appendEntries to %v: %v (sendAppendEntries)", server, args)
-
-	return rf.peers[server].Call(rpcAppendEntries, args, reply)
-}
-
-// START
-
-//
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-//
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (2B).
-
-	return index, term, isLeader
-}
-
 // KILL
 
 //
@@ -364,8 +357,10 @@ func (rf *Raft) killed() bool {
 
 // TICKER
 
+//
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
+//
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 
@@ -440,34 +435,42 @@ func (rf *Raft) requestVote(server int, args *RequestVoteArgs, votes *int) {
 	reply := &RequestVoteReply{}
 	ok := rf.sendRequestVote(server, args, reply)
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if ok && rf.currentTerm == args.Term {
-		rf.processRequestVoteReplyLck(server, reply, votes)
+	if ok {
+		rf.processRequestVoteReply(server, args, reply, votes)
 	} else {
 		LogRaft(VVerbose, TError, rf.me, "sendRequestVote to %v falied (appendEntries)", server)
 	}
 }
 
-func (rf *Raft) processRequestVoteReplyLck(server int, reply *RequestVoteReply, votes *int) {
-	LogRaft(VBasic, TCandidate, rf.me, "vote reply from %v in term %v: %v (processRequestVoteReplyLck)", server, rf.currentTerm, reply)
+func (rf *Raft) processRequestVoteReply(server int, args *RequestVoteArgs, reply *RequestVoteReply, votes *int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	switch reply.VoteGranted {
-	case true:
-		*votes++
-		// Candidates (§5.2):
-		//	If votes received from majority of servers: become leader
-		if *votes > rf.nPeers()/2 {
-			rf.becomeLeaderLck()
-		}
-	case false:
-		// All Servers:
-		//	If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-		if reply.Term > rf.currentTerm {
-			rf.becomeFollowerLck(reply.Term)
+	LogRaft(VBasic, TCandidate, rf.me, "vote reply from %v in term %v: %v (processRequestVoteReply)", server, rf.currentTerm, reply)
+
+	if rf.currentTerm == args.Term && rf.role == Candidate {
+		switch reply.VoteGranted {
+		case true:
+			*votes++
+			// Candidates (§5.2):
+			//	If votes received from majority of servers: become leader
+			if *votes > rf.nPeers()/2 {
+				rf.becomeLeaderLck()
+			}
+		case false:
+			// All Servers:
+			//	If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
+			if reply.Term > rf.currentTerm {
+				rf.becomeFollowerLck(reply.Term)
+			}
 		}
 	}
+}
+
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	LogRaft(VBasic, TCandidate, rf.me, "requestVote from %v: %v (sendRequestVote)", server, args)
+
+	return rf.peers[server].Call(rpcRequestVote, args, reply)
 }
 
 // LEADER
@@ -502,14 +505,10 @@ func (rf *Raft) appendEntriesLck() {
 func (rf *Raft) appendEntries(server int) {
 	args := rf.makeAppendEntriesArgs(server)
 	reply := &AppendEntriesReply{}
-
 	ok := rf.sendAppendEntries(server, args, reply)
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if ok && rf.currentTerm == args.Term {
-		rf.processAppendEntriesReplyLck(reply)
+	if ok {
+		rf.processAppendEntriesReply(server, args, reply)
 	} else {
 		LogRaft(VVerbose, TError, rf.me, "sendAppendEntries to %v falied (appendEntries)", server)
 	}
@@ -525,8 +524,20 @@ func (rf *Raft) makeAppendEntriesArgs(server int) *AppendEntriesArgs {
 	return &AppendEntriesArgs{rf.currentTerm, rf.me, prevLogIndex, prevLogTerm, entries, rf.commitIndex}
 }
 
-func (rf *Raft) processAppendEntriesReplyLck(reply *AppendEntriesReply) {
-	LogRaft(VBasic, TLeader, rf.me, "append reply in term %v: %v (processAppendEntriesReplyLck)", rf.currentTerm, reply)
+func (rf *Raft) processAppendEntriesReply(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	LogRaft(VBasic, TLeader, rf.me, "append reply from %v in term %v: %v (processAppendEntriesReply)", server, rf.currentTerm, reply)
+
+	if rf.currentTerm == args.Term && rf.role == Leader {
+	}
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	LogRaft(VBasic, TLeader, rf.me, "appendEntries to %v: %v (sendAppendEntries)", server, args)
+
+	return rf.peers[server].Call(rpcAppendEntries, args, reply)
 }
 
 // MAKE

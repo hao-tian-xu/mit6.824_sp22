@@ -12,25 +12,26 @@ import typer
 # fmt: off
 # Mapping from topics to colors
 TOPICS = {
-    "LEAD": "yellow",  # raft leader
-    "CAND": "bright_cyan",  # raft candidate
-    "DEMO": "black",        # raft demotion
-    "VOTE": "dark_cyan",    # raft vote (TODO change color)
-    "TERM": "green",        # raft term
-    "LOG0": "blue",         # raft log fail
-    "LOG1": "cyan",         # raft log success
-    "CMIT": "bright_black", # raft commit
-    "APLY": "white",        # server apply
-    "SNAP": "white",        # server snapshot
+    "LEAD": "yellow",           # raft leader
+    "CAND": "dark_cyan",        # raft candidate
+    "DEMO": "black",            # raft demotion
+    "VOTE": "bright_cyan",      # raft vote
+    "APND": "bright_yellow",    # raft append
+    "TERM": "green",            # raft term
+    "LOG0": "blue",             # raft log fail
+    "LOG1": "cyan",             # raft log success
+    "CMIT": "bright_black",     # raft commit
+    "APLY": "white",            # server apply
+    "SNAP": "white",            # server snapshot
 
-    "REDO": "dark_red",     # resend
-    "TRCE": "bright_white", # trace
-    "ERRO": "dark_red",     # error
-    "WARN": "bright_red",   # warn
+    "REDO": "dark_red",         # resend
+    "TRCE": "bright_white",     # trace
+    "ERRO": "dark_red",         # error
+    "WARN": "bright_red",       # warn
 
-    "CLNT": "magenta",      # client
-    "KVSR": "yellow",       # kvserver
-    "CTLR": "yellow",       # shard controller
+    "CLNT": "magenta",          # client
+    "KVSR": "yellow",           # kvserver
+    "CTLR": "yellow",           # shard controller
 }
 # fmt: on
 
@@ -87,6 +88,7 @@ def main(
             # Colorize output by using rich syntax when needed
             if colorize and topic in TOPICS:
                 color = TOPICS[topic]
+                msg = "\n".join([time, msg])
                 msg = f"[{color}]{msg}[/{color}]"
 
             # Single column printing. Always the case for debug stmts in tests
