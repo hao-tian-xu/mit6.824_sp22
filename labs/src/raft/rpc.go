@@ -51,12 +51,21 @@ type AppendEntriesArgs struct {
 }
 
 func (a AppendEntriesArgs) String() string {
-	return fmt.Sprintf("prevLog ind%v/term%v in term %v, leaderCommit %v", a.PrevLogIndex, a.PrevLogTerm, a.Term, a.LeaderCommit)
+	entries := ""
+	if len(a.Entries) != 0 {
+		entries = fmt.Sprintf("%v~%v", a.Entries[0].Index, a.Entries[len(a.Entries)-1].Index)
+	}
+	return fmt.Sprintf("prevLog: ind%v/term%v, term: %v, leaderCommit: %v, entries: %v",
+		a.PrevLogIndex, a.PrevLogTerm, a.Term, a.LeaderCommit, entries)
 }
 
 type AppendEntriesReply struct {
 	Term    int  // currentTerm, for leader to update itself
 	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+
+	// Back up quickly
+	ConflictTerm       int
+	ConflictFirstIndex int
 }
 
 func (a AppendEntriesReply) String() string {

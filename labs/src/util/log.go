@@ -27,6 +27,7 @@ const (
 	TDemotion   LogTopic = "DEMO"
 	TVote       LogTopic = "VOTE"
 	TAppend     LogTopic = "APND"
+	TTick       LogTopic = "TICK"
 	TTerm       LogTopic = "TERM"
 	TLogFail    LogTopic = "LOG0"
 	TLogSuccess LogTopic = "LOG1"

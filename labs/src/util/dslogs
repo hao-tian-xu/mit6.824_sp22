@@ -17,7 +17,8 @@ TOPICS = {
     "DEMO": "black",            # raft demotion
     "VOTE": "bright_cyan",      # raft vote
     "APND": "bright_yellow",    # raft append
-    "TERM": "green",            # raft term
+    "TICK": "dark_blue",        # raft tick
+    "TERM": "dark_green",       # raft term
     "LOG0": "blue",             # raft log fail
     "LOG1": "cyan",             # raft log success
     "CMIT": "bright_black",     # raft commit
@@ -88,7 +89,8 @@ def main(
             # Colorize output by using rich syntax when needed
             if colorize and topic in TOPICS:
                 color = TOPICS[topic]
-                msg = "\n".join([time, msg])
+                info = " ".join([time, topic])
+                msg = "\n".join([info, msg])
                 msg = f"[{color}]{msg}[/{color}]"
 
             # Single column printing. Always the case for debug stmts in tests

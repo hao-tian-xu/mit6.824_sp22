@@ -142,6 +142,8 @@
 
 ## Part 2B: log
 
+### Hint
+
 - [x] Run `git pull` to get the latest lab software.
 - [x] Your first goal should be to pass `TestBasicAgree2B()`. 
   - [x] Start by implementing `Start()`, 
