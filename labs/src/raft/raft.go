@@ -33,7 +33,7 @@ import (
 	//	"6.824/labgob"
 	"6.824/labrpc"
 
-	// additional
+	// util
 	. "6.824/util"
 )
 
@@ -63,7 +63,6 @@ type ApplyMsg struct {
 	Command      interface{}
 	CommandIndex int
 
-	// For 2D:
 	SnapshotValid bool
 	Snapshot      []byte
 	SnapshotTerm  int
@@ -103,30 +102,30 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
+	// Persistent state on all servers (Updated on stable storage before responding to RPCs)
 
-	// Persistent state on all servers
-	//	(Updated on stable storage before responding to RPCs)
 	currentTerm int        // latest term server has seen (initialized to 0 on first boot, increases monotonically)
 	votedFor    int        // candidateId that received vote in current term (or null if none)
 	log         []LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
 	snapshot    Snapshot
 
 	// Volatile state on all servers
+
 	commitIndex int // index of highest log entry known to be committed (initialized to 0, increases monotonically)
 	lastApplied int // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
 
 	// Volatile state on leaders
+
 	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 
 	// Additional
+
 	role            string    // this peer's current role
 	electionTimeout time.Time // timeout to start election
 	applyCond       sync.Cond
 	applySnapshot   bool
+	leaderId        int
 }
 
 // INTERFACE
@@ -136,11 +135,8 @@ type Raft struct {
 // believes it is the leader.
 //
 func (rf *Raft) GetState() (int, bool) {
-	// Your code here (2A).
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (GetState)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (GetState)")
-	defer rf.mu.Unlock()
+	rf.lock("(GetState)")
+	defer rf.unlock("(GetState)")
 
 	return rf.currentTerm, rf.role == Leader
 }
@@ -160,11 +156,8 @@ func (rf *Raft) GetState() (int, bool) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	// Your code here (2B).
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (Start)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (Start)")
-	defer rf.mu.Unlock()
+	rf.lock("(Start)")
+	defer rf.unlock("(Start)")
 
 	isLeader := rf.role == Leader
 	if !isLeader {
@@ -187,7 +180,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-// Snapshot
+//
+// return probable leaderId. return -1 if unkown or the peer is leader.
+//
+func (rf *Raft) GetLeaderId() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	return rf.leaderId
+}
+
+// snapshot
 
 //
 // the service says it has created a snapshot that has
@@ -196,11 +199,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // that index. Raft should now trim its log as much as possible.
 //
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (Snapshot)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (Snapshot)")
-	defer rf.mu.Unlock()
+	rf.lock("(Snapshot)")
+	defer rf.unlock("(Snapshot)")
 
 	rf.logL(VBasic, TClient, "snapshot at %v", index)
 
@@ -214,15 +214,12 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // have more recent info since it communicate the snapshot on applyCh.
 //
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
 	return true
 }
 
 // HELPER METHODS
 
-func (rf *Raft) initL(peers []*labrpc.ClientEnd, me int, persister *Persister, ch chan ApplyMsg) {
+func (rf *Raft) initL(peers []*labrpc.ClientEnd, me int, persister *Persister) {
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
@@ -242,6 +239,8 @@ func (rf *Raft) initL(peers []*labrpc.ClientEnd, me int, persister *Persister, c
 	rf.role = Follower
 	rf.resetElectionTimeoutL(true)
 	rf.applyCond = *sync.NewCond(&rf.mu)
+	rf.applySnapshot = false
+	rf.leaderId = NA
 }
 
 func (rf *Raft) nPeers() int {
@@ -251,7 +250,7 @@ func (rf *Raft) nPeers() int {
 func (rf *Raft) resetElectionTimeoutL(init bool) {
 	randTimeout := time.Duration(rand.Int() % (_MaxTimeout - _MinTimeout))
 	if init {
-		rf.electionTimeout = time.Now().Add((randTimeout) * _HeartbeatsInterval)
+		rf.electionTimeout = time.Now().Add(randTimeout * _HeartbeatsInterval)
 	} else {
 		rf.electionTimeout = time.Now().Add((_MinTimeout + randTimeout) * _HeartbeatsInterval)
 	}
@@ -261,10 +260,31 @@ func (rf *Raft) lastLogL() LogEntry {
 	return rf.log[len(rf.log)-1]
 }
 
+func (rf *Raft) updateMatchAndNextL(server int, newMatch int) {
+	if newMatch > rf.matchIndex[server] {
+		rf.matchIndex[server] = newMatch
+	}
+	if newMatch >= rf.nextIndex[server] {
+		rf.nextIndex[server] = newMatch + 1
+	}
+}
+
 // custom log function
 
 func (rf *Raft) logL(verbosity LogVerbosity, topic LogTopic, format string, a ...interface{}) {
 	LogRaft(verbosity, topic, rf.me, rf.currentTerm, format, a...)
+}
+
+// custom lock function with log
+
+func (rf *Raft) lock(method string) {
+	LogRaft(VExcessive, TTrace, rf.me, NA, "acquire lock %v", method)
+	rf.mu.Lock()
+}
+
+func (rf *Raft) unlock(method string) {
+	rf.logL(VExcessive, TTrace, "release lock %v", method)
+	rf.mu.Unlock()
 }
 
 // snapshot
@@ -291,6 +311,8 @@ func (rf *Raft) trimLogL(index int) {
 	rf.log = newLog
 }
 
+// kill
+
 //
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
@@ -304,7 +326,6 @@ func (rf *Raft) trimLogL(index int) {
 //
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
 }
 
 func (rf *Raft) killed() bool {
@@ -312,17 +333,14 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// RequestVote RPC Handler
+// REQUESTVOTE RPC HANDLER
 
 //
 // Invoked by candidates to gather votes (§5.2).
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (RequestVote)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (RequestVote)")
-	defer rf.mu.Unlock()
+	rf.lock("(RequestVote)")
+	defer rf.unlock("(RequestVote)")
 
 	// All Servers:
 	//	If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
@@ -364,16 +382,14 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return rf.peers[server].Call(rpcRequestVote, args, reply)
 }
 
-// AppendEntries RPC Handler
+// APPENDENTRIES RPC HANDLER
 
 //
 // Invoked by leader to replicate log entries (§5.3); also used as heartbeat (§5.2).
 //
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (AppendEntries)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (AppendEntries)")
-	defer rf.mu.Unlock()
+	rf.lock("(AppendEntries)")
+	defer rf.unlock("(AppendEntries)")
 
 	// All Servers:
 	//	If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
@@ -392,6 +408,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//		current leader or granting vote to candidate: convert to candidate
 	if args.Term >= rf.currentTerm {
 		rf.resetElectionTimeoutL(false)
+		rf.leaderId = args.LeaderId
 	}
 
 	rf._processAppendEntriesL(args, reply)
@@ -471,21 +488,27 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return rf.peers[server].Call(rpcAppendEntries, args, reply)
 }
 
-// Snapshot RPC Handler
+// SNAPSHOT RPC HANDLER
 
 //
 // Invoked by leader to send a snapshot to a follower.
 //
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (InstallSnapshot)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (InstallSnapshot)")
-	defer rf.mu.Unlock()
+	rf.lock("(InstallSnapshot)")
+	defer rf.unlock("(InstallSnapshot)")
 
 	// All Servers:
 	//	If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
 	if args.Term > rf.currentTerm {
 		rf.becomeFollowerL(args.Term)
+	}
+
+	// Snapshot Additional - Followers:
+	//	If election timeout elapses without receiving AppendEntries RPC from
+	//		current leader or granting vote to candidate: convert to candidate
+	if args.Term >= rf.currentTerm {
+		rf.resetElectionTimeoutL(false)
+		rf.leaderId = args.LeaderId
 	}
 
 	rf.logL(VBasic, TSnapshot, "install from %v (%v) (InstallSnapshot)",
@@ -529,7 +552,6 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persistL() {
-	// rf.persister.SaveRaftState(data)
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	if e.Encode(rf.currentTerm) != nil ||
@@ -550,7 +572,7 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
+
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var currentTerm int
@@ -575,10 +597,8 @@ func (rf *Raft) readPersist(data []byte) {
 // APPLIER
 
 func (rf *Raft) apply(applyCh chan ApplyMsg) {
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (apply)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (apply)")
-	defer rf.mu.Unlock()
+	rf.lock("(apply)")
+	defer rf.unlock("(apply)")
 
 	for !rf.killed() {
 		// InstallSnapshot RPC Receiver implementation:
@@ -594,24 +614,21 @@ func (rf *Raft) apply(applyCh chan ApplyMsg) {
 
 			rf.logL(VBasic, TApply, "apply log %v (apply)", rf.lastApplied)
 
-			//rf.logL(VTemp, TTrace, "lastApplied %v, firstIndex %v", rf.lastApplied, rf.logFirstIndexL())
-
 			applyMsg := ApplyMsg{
 				CommandValid: true,
 				Command:      rf.getLogL(rf.lastApplied).Command,
 				CommandIndex: rf.lastApplied,
 			}
 
-			rf.mu.Unlock()
-			LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (apply)")
+			rf.unlock("(apply)")
 			applyCh <- applyMsg
-			LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (apply)")
-			rf.mu.Lock()
+			rf.lock("(apply)")
+
 		}
 
 		if rf.commitIndex <= rf.lastApplied && !rf.applySnapshot {
-			LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (apply-wait)")
-			LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (apply-wait)")
+			rf.logL(VExcessive, TTrace, "lock released (apply-wait)")
+			rf.logL(VExcessive, TTrace, "lock acquired (apply-wait)")
 			rf.applyCond.Wait()
 		}
 	}
@@ -635,11 +652,9 @@ func (rf *Raft) applySnapshotL(applyCh chan ApplyMsg) {
 			SnapshotIndex: rf.snapshot.LastIncludedIndex,
 		}
 
-		rf.mu.Unlock()
-		LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (applySnapshotL)")
+		rf.unlock("(applySnapshotL)")
 		applyCh <- applyMsg
-		LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (applySnapshotL)")
-		rf.mu.Lock()
+		rf.lock("(applySnapshotL)")
 	}
 }
 
@@ -655,20 +670,14 @@ func (rf *Raft) applySignalL() {
 //
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
-		// Your code here to check if a leader election should
-		// be started and to randomize sleeping time using
-		// time.Sleep().
 		rf.tick()
 		time.Sleep(_HeartbeatsInterval)
 	}
 }
 
 func (rf *Raft) tick() {
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (tick)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (tick)")
-	defer rf.mu.Unlock()
+	rf.lock("(tick)")
+	defer rf.unlock("(tick)")
 
 	rf.logL(VVerbose, TTick, "role: %v (tick)", rf.role)
 
@@ -702,18 +711,19 @@ func (rf *Raft) becomeFollowerL(term int) {
 func (rf *Raft) becomeCandidateL() {
 	// Candidates (§5.2):
 	//	On conversion to candidate, start election:
-	//		Increment currentTerm
-	//		Vote for self
-	//		Reset election timer
+	//	- Increment currentTerm
+	//	- Vote for self
+	//	- Reset election timer
 	rf.role = Candidate
 	rf.currentTerm++
 	rf.votedFor = rf.me
+	rf.leaderId = NA
 	rf.persistL()
 	rf.resetElectionTimeoutL(false)
 
 	rf.logL(VBasic, TCandidate, "candidate (becomeCandidateL)")
 
-	//		Send RequestVote RPCs to all other servers
+	//	- Send RequestVote RPCs to all other servers
 	rf.requestsL()
 }
 
@@ -733,10 +743,8 @@ func (rf *Raft) request(server int, args *RequestVoteArgs, votes *int) {
 	reply := &RequestVoteReply{}
 	ok := rf.sendRequestVote(server, args, reply)
 
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (request)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (request)")
-	defer rf.mu.Unlock()
+	rf.lock("(request)")
+	defer rf.unlock("(request)")
 
 	if ok {
 		rf.processRequestReplyL(server, args, reply, votes)
@@ -800,10 +808,8 @@ func (rf *Raft) appendsL() {
 }
 
 func (rf *Raft) append(server int, term int) {
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (append)")
-	rf.mu.Lock()
-	defer LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (append)")
-	defer rf.mu.Unlock()
+	rf.lock("(append)")
+	defer rf.unlock("(append)")
 
 	if rf.currentTerm != term {
 		return
@@ -821,11 +827,9 @@ func (rf *Raft) append(server int, term int) {
 
 	rf.logL(VBasic, TLeader, "append to %v: %v (append)", server, args)
 
-	rf.mu.Unlock()
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (append)")
+	rf.unlock("(append)")
 	ok := rf.sendAppendEntries(server, args, reply)
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (append)")
-	rf.mu.Lock()
+	rf.lock("(append)")
 
 	if ok {
 		rf.processAppendReplyL(server, args, reply)
@@ -854,11 +858,7 @@ func (rf *Raft) processAppendReplyL(server int, args *AppendEntriesArgs, reply *
 		case true:
 			// Leaders:
 			//	If successful: update nextIndex and matchIndex for follower (§5.3)
-			matchIndex := args.PrevLogIndex + len(args.Entries)
-			if matchIndex > rf.matchIndex[server] {
-				rf.matchIndex[server] = matchIndex
-				rf.nextIndex[server] = matchIndex + 1
-			}
+			rf.updateMatchAndNextL(server, args.PrevLogIndex+len(args.Entries))
 			//	If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
 			//		and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 			if ok := rf.setCommitIndexL(); ok {
@@ -882,24 +882,20 @@ func (rf *Raft) _processPrevLogConflictL(server int, args *AppendEntriesArgs, re
 	rf.logL(VBasic, TLogFail, "conflict with %v i%v/T%02d (_processPrevLogConflictL)",
 		server, reply.ConflictFirstIndex, reply.ConflictTerm)
 
-	if reply.ConflictTerm == NA {
+	if reply.ConflictTerm == NA || reply.ConflictTerm > rf.currentTerm {
 		rf.nextIndex[server] = reply.ConflictFirstIndex
 	} else {
-		if reply.ConflictTerm > rf.currentTerm {
-			rf.nextIndex[server] = reply.ConflictFirstIndex
-		} else {
-			// search for first matched index
-			index := args.PrevLogIndex - 1
-			minIndex := Max(reply.ConflictFirstIndex, rf.logFirstIndexL()+1)
-			for index >= minIndex {
-				if rf.getLogL(index).Term == reply.ConflictTerm {
-					index++
-					break
-				}
-				index--
+		// search for first matched index
+		index := args.PrevLogIndex - 1
+		minIndex := Max(reply.ConflictFirstIndex, rf.logFirstIndexL()+1)
+		for index >= minIndex {
+			if rf.getLogL(index).Term == reply.ConflictTerm {
+				index++
+				break
 			}
-			rf.nextIndex[server] = index
+			index--
 		}
+		rf.nextIndex[server] = index
 	}
 }
 
@@ -909,13 +905,13 @@ func (rf *Raft) setCommitIndexL() bool {
 
 	sort.Ints(matchIndex)
 	N := matchIndex[rf.nPeers()/2+1]
+
 	if N > rf.commitIndex && rf.getLogL(N).Term == rf.currentTerm {
 		rf.logL(VBasic, TCommit, "commit %v (setCommitIndexL)", N)
 
 		rf.commitIndex = N
 		return true
 	}
-
 	return false
 }
 
@@ -927,11 +923,9 @@ func (rf *Raft) installL(server int) {
 
 	rf.logL(VBasic, TSnapshot, "install to %v: %v (install)", server, args)
 
-	rf.mu.Unlock()
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock released (installL)")
+	rf.unlock("(installL)")
 	ok := rf.sendInstallSnapshot(server, args, reply)
-	LogRaft(VExcessive, TTrace, rf.me, NA, "lock acquired (installL)")
-	rf.mu.Lock()
+	rf.lock("(installL)")
 
 	if ok {
 		rf.processInstallReplyL(server, args, reply)
@@ -951,11 +945,9 @@ func (rf *Raft) processInstallReplyL(server int, args *InstallSnapshotArgs, repl
 			rf.becomeFollowerL(reply.Term)
 			return
 		}
-		// Snapshot Additional
-		if rf.matchIndex[server] < args.Snapshot.LastIncludedIndex {
-			rf.matchIndex[server] = args.Snapshot.LastIncludedIndex
-			rf.nextIndex[server] = rf.matchIndex[server] + 1
-		}
+		// Snapshot Additional:
+		//	If successful: update nextIndex and matchIndex for follower
+		rf.updateMatchAndNextL(server, args.Snapshot.LastIncludedIndex)
 	}
 }
 
@@ -975,7 +967,7 @@ func (rf *Raft) processInstallReplyL(server int, args *InstallSnapshotArgs, repl
 func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	// initialization
 	rf := &Raft{}
-	rf.initL(peers, me, persister, applyCh)
+	rf.initL(peers, me, persister)
 
 	rf.logL(VBasic, TTrace, "start peer (Make)")
 
@@ -989,6 +981,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
+	// start apply goroutine to send ApplyMsg to service
 	go rf.apply(applyCh)
 
 	return rf

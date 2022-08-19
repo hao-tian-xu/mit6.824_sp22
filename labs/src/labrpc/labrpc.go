@@ -49,7 +49,9 @@ package labrpc
 //   pass svc to srv.AddService()
 //
 
-import "6.824/labgob"
+import (
+	"6.824/labgob"
+)
 import "bytes"
 import "reflect"
 import "sync"
@@ -58,6 +60,8 @@ import "strings"
 import "math/rand"
 import "time"
 import "sync/atomic"
+
+import . "6.824/util"
 
 type reqMsg struct {
 	endname  interface{} // name of sending ClientEnd
@@ -226,6 +230,7 @@ func (rn *Network) processReq(req reqMsg) {
 		}
 
 		if reliable == false && (rand.Int()%1000) < 100 {
+			LogRaft(VBasic, TTester, NA, NA, "drop request")
 			// drop the request, return as if timeout
 			req.replyCh <- replyMsg{false, nil}
 			return
@@ -273,6 +278,7 @@ func (rn *Network) processReq(req reqMsg) {
 			// server was killed while we were waiting; return error.
 			req.replyCh <- replyMsg{false, nil}
 		} else if reliable == false && (rand.Int()%1000) < 100 {
+			LogRaft(VBasic, TTester, NA, NA, "drop reply")
 			// drop the reply, return as if timeout
 			req.replyCh <- replyMsg{false, nil}
 		} else if longreordering == true && rand.Intn(900) < 600 {
