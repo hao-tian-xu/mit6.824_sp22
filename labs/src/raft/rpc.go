@@ -3,11 +3,12 @@ package raft
 import "fmt"
 
 const (
-	rpcRequestVote   = "Raft.RequestVote"
-	rpcAppendEntries = "Raft.AppendEntries"
+	rpcRequestVote     = "Raft.RequestVote"
+	rpcAppendEntries   = "Raft.AppendEntries"
+	rpcInstallSnapshot = "Raft.InstallSnapshot"
 )
 
-// REQUEST VOTE RPC STRUCT
+// REQUEST VOTE RPC TYPES
 
 //
 // example RequestVote RPC arguments structure.
@@ -22,7 +23,7 @@ type RequestVoteArgs struct {
 }
 
 func (r *RequestVoteArgs) String() string {
-	return fmt.Sprintf("lastLog ind%v/term%v in term %v", r.LastLogIndex, r.LastLogTerm, r.Term)
+	return fmt.Sprintf("lastLog i%v/T%02d in term %v", r.LastLogIndex, r.LastLogTerm, r.Term)
 }
 
 //
@@ -36,10 +37,10 @@ type RequestVoteReply struct {
 }
 
 func (r *RequestVoteReply) String() string {
-	return fmt.Sprintf("%v/term%v", r.VoteGranted, r.Term)
+	return fmt.Sprintf("%v/T%02d", r.VoteGranted, r.Term)
 }
 
-// APPEND ENTRIES RPC STRUCT
+// APPEND ENTRIES RPC TYPES
 
 type AppendEntriesArgs struct {
 	Term         int        // leader’s term
@@ -55,7 +56,7 @@ func (a AppendEntriesArgs) String() string {
 	if len(a.Entries) != 0 {
 		entries = fmt.Sprintf("%v~%v", a.Entries[0].Index, a.Entries[len(a.Entries)-1].Index)
 	}
-	return fmt.Sprintf("prevLog: ind%v/term%v, term: %v, leaderCommit: %v, entries: %v",
+	return fmt.Sprintf("prevLog: i%v/T%02d, term: %v, leaderCommit: %v, entries: %v",
 		a.PrevLogIndex, a.PrevLogTerm, a.Term, a.LeaderCommit, entries)
 }
 
@@ -69,5 +70,26 @@ type AppendEntriesReply struct {
 }
 
 func (a AppendEntriesReply) String() string {
-	return fmt.Sprintf("%v/term%v", a.Success, a.Term)
+	return fmt.Sprintf("%v/T%02d", a.Success, a.Term)
+}
+
+// INSTALL SNAPSHOT RPC TYPES
+
+type InstallSnapshotArgs struct {
+	Term     int
+	LeaderId int
+	Snapshot Snapshot
+}
+
+func (i InstallSnapshotArgs) String() string {
+	return fmt.Sprintf("snapshot: i%v/T%02d, term: %v",
+		i.Snapshot.LastIncludedIndex, i.Snapshot.LastIncludedTerm, i.Term)
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
+
+func (i InstallSnapshotReply) String() string {
+	return fmt.Sprintf("T%02d", i.Term)
 }

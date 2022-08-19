@@ -12,18 +12,17 @@ import typer
 # fmt: off
 # Mapping from topics to colors
 TOPICS = {
-    "LEAD": "yellow",           # raft leader
-    "CAND": "dark_cyan",        # raft candidate
-    "DEMO": "black",            # raft demotion
-    "VOTE": "bright_cyan",      # raft vote
+    "LEAD": "yellow",           # raft leader and send append
     "APND": "bright_yellow",    # raft append
-    "TICK": "dark_blue",        # raft tick
-    "TERM": "dark_green",       # raft term
-    "LOG0": "blue",             # raft log fail
-    "LOG1": "cyan",             # raft log success
+    "SNAP": "bright_blue",            # server snapshot
+    "CAND": "green",            # raft candidate
+    "VOTE": "bright_cyan",      # raft vote
+    "DEMO": "black",            # raft demotion
+    "TICK": "bright_white",     # raft tick
+    "LOG0": "dark_blue",        # raft log fail
+    "LOG1": "blue",             # raft log success
     "CMIT": "bright_black",     # raft commit
-    "APLY": "white",            # server apply
-    "SNAP": "white",            # server snapshot
+    "APLY": "dark_blue",            # server apply
 
     "REDO": "dark_red",         # resend
     "TRCE": "bright_white",     # trace
@@ -33,6 +32,8 @@ TOPICS = {
     "CLNT": "magenta",          # client
     "KVSR": "yellow",           # kvserver
     "CTLR": "yellow",           # shard controller
+
+    "TSTR": "purple",           # tester
 }
 # fmt: on
 
@@ -72,7 +73,7 @@ def main(
     panic = False
     for line in input_:
         try:
-            time, topic, *msg = line.strip().split(" ")
+            time, topic, server, term, *msg = line.strip().split(" ")
             assert topic in all_topics
             # To ignore some topics
             if topic not in topics:
@@ -84,12 +85,12 @@ def main(
             # any particular peer. Otherwise we can treat second column
             # as peer id
             if topic != "TEST":
-                i = int(msg[1: 3]) % n_columns
+                i = int(server[1:]) % n_columns
 
             # Colorize output by using rich syntax when needed
             if colorize and topic in TOPICS:
                 color = TOPICS[topic]
-                info = " ".join([time, topic])
+                info = " ".join([time, topic, server, term])
                 msg = "\n".join([info, msg])
                 msg = f"[{color}]{msg}[/{color}]"
 

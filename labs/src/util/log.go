@@ -28,7 +28,6 @@ const (
 	TVote       LogTopic = "VOTE"
 	TAppend     LogTopic = "APND"
 	TTick       LogTopic = "TICK"
-	TTerm       LogTopic = "TERM"
 	TLogFail    LogTopic = "LOG0"
 	TLogSuccess LogTopic = "LOG1"
 	TCommit     LogTopic = "CMIT"
@@ -43,6 +42,8 @@ const (
 	TClient   LogTopic = "CLNT"
 	TKVServer LogTopic = "KVSR"
 	TCtrler   LogTopic = "CTLR"
+	//	tester
+	TTester LogTopic = "TSTR"
 )
 
 type (
@@ -77,31 +78,35 @@ func init() {
 
 // LOG FUNCTION
 
+func LogTest(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
+	_log("T", verbosity, topic, peerId, NA, format, a...)
+}
+
 //
 // raft log wrapper
 //
-func LogRaft(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("R", verbosity, topic, peerId, format, a...)
+func LogRaft(verbosity LogVerbosity, topic LogTopic, peerId int, term int, format string, a ...interface{}) {
+	_log("R", verbosity, topic, peerId, term, format, a...)
 }
 
 //
 // controller log wrapper
 //
 func LogCtrler(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("S", verbosity, topic, peerId, format, a...)
+	_log("S", verbosity, topic, peerId, 0, format, a...)
 }
 
 //
 // controller client log wrapper
 //
 func LogCtrlerClnt(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("C", verbosity, topic, peerId, format, a...)
+	_log("C", verbosity, topic, peerId, 0, format, a...)
 }
 
 //
 // a custom log function
 //
-func _log(role string, verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
+func _log(role string, verbosity LogVerbosity, topic LogTopic, peerId int, term int, format string, a ...interface{}) {
 	if logVerbosity >= int(verbosity) {
 		_time := time.Since(logStart).Microseconds()
 
@@ -111,7 +116,7 @@ func _log(role string, verbosity LogVerbosity, topic LogTopic, peerId int, forma
 
 		timeFlag := fmt.Sprintf("%03d.%03d.%01d", sec, milliSec, microSec)
 
-		prefix := fmt.Sprintf("%v %v %v%02d ", timeFlag, string(topic), role, peerId)
+		prefix := fmt.Sprintf("%v %v %v%02d T%02d ", timeFlag, string(topic), role, peerId, term)
 		format = prefix + format
 		log.Printf(format, a...)
 	}

@@ -23,6 +23,8 @@ import "encoding/base64"
 import "time"
 import "fmt"
 
+import . "6.824/util"
+
 func randstring(n int) string {
 	b := make([]byte, 2*n)
 	crand.Read(b)
@@ -360,6 +362,8 @@ func (cfg *config) cleanup() {
 func (cfg *config) connect(i int) {
 	// fmt.Printf("connect(%d)\n", i)
 
+	LogTest(VBasic, TTester, i, "connect")
+
 	cfg.connected[i] = true
 
 	// outgoing ClientEnds
@@ -382,6 +386,8 @@ func (cfg *config) connect(i int) {
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
 	// fmt.Printf("disconnect(%d)\n", i)
+
+	LogTest(VBasic, TTester, i, "disconnect")
 
 	cfg.connected[i] = false
 

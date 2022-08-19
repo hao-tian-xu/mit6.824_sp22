@@ -188,13 +188,13 @@
 ## Part 2D: log compaction
 
 - [ ] Section 7 of the [extended Raft paper](https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf) outlines the scheme; you will have to design the details.
-- [x] You may find it helpful to refer to the [diagram of Raft interactions](https://pdos.csail.mit.edu/6.824/notes/raft_diagram.pdf) to understand how the replicated service and Raft communicate.
+- [ ] You may find it helpful to refer to the [diagram of Raft interactions](https://pdos.csail.mit.edu/6.824/notes/raft_diagram.pdf) to understand how the replicated service and Raft communicate.
 - [x] Your Raft must provide the following function that the service can call with a serialized snapshot of its state: `Snapshot(index int, snapshot []byte)`
   - [x] In Lab 2D, the tester calls `Snapshot()` periodically. In Lab 3, you will write a key/value server that calls `Snapshot()`; the snapshot will contain the complete table of key/value pairs. The service layer calls `Snapshot()` on every peer (not just on the leader).
   - [x] The `index` argument indicates the highest log entry that's reflected in the snapshot. Raft should discard its log entries before that point. 
   - [x] You'll need to revise your Raft code to operate while storing only the tail of the log.
 - [x] You'll need to implement the `InstallSnapshot` RPC discussed in the paper that allows a Raft leader to tell a lagging Raft peer to replace its state with a snapshot. 
-  - [x] You will likely need to think through how InstallSnapshot should interact with the state and rules in Figure 2.
+  - [ ] You will likely need to think through how InstallSnapshot should interact with the state and rules in Figure 2.
 - [x] When a follower's Raft code receives an InstallSnapshot RPC, it can use the `applyCh` to send the snapshot to the service in an `ApplyMsg`. The `ApplyMsg` struct definition already contains the fields you will need (and which the tester expects). 
   - [x] Take care that these snapshots only advance the service's state, and don't cause it to move backwards.
 - [x] If a server crashes, it must restart from persisted data. Your Raft should persist both Raft state and the corresponding snapshot. Use `persister.SaveStateAndSnapshot()`, which takes separate arguments for the Raft state and the corresponding snapshot. If there's no snapshot, pass `nil` as the `snapshot` argument.
@@ -205,10 +205,11 @@
 - [x] A good place to start is to modify your code to so that it is able to store just the part of the log starting at some index X. Initially you can set X to zero and run the 2B/2C tests. Then make `Snapshot(index)` discard the log before `index`, and set X equal to `index`. If all goes well you should now pass the first 2D test.
   - [x] You won't be able to store the log in a Go slice and use Go slice indices interchangeably with Raft log indices; you'll need to index the slice in a way that accounts for the discarded portion of the log.
 - [x] Next: have the leader send an InstallSnapshot RPC if it doesn't have the log entries required to bring a follower up to date.
-- [x] Send the entire snapshot in a single InstallSnapshot RPC. Don't implement Figure 13's `offset` mechanism for splitting up the snapshot.
+  - [x] Send the entire snapshot in a single InstallSnapshot RPC. Don't implement Figure 13's `offset` mechanism for splitting up the snapshot.
+
 - [x] Raft must discard old log entries in a way that allows the Go garbage collector to free and re-use the memory; this requires that there be no reachable references (pointers) to the discarded log entries.
 - [x] Even when the log is trimmed, your implemention still needs to properly send the term and index of the entry prior to new entries in `AppendEntries` RPCs; this may require saving and referencing the latest snapshot's `lastIncludedTerm/lastIncludedIndex` (consider whether this should be persisted).
-- [x] A reasonable amount of time to consume for the full set of Lab 2 tests (2A+2B+2C+2D) without `-race` is 6 minutes of real time and one minute of CPU time. When running with `-race`, it is about 10 minutes of real time and two minutes of CPU time.
+- [ ] A reasonable amount of time to consume for the full set of Lab 2 tests (2A+2B+2C+2D) without `-race` is 6 minutes of real time and one minute of CPU time. When running with `-race`, it is about 10 minutes of real time and two minutes of CPU time.
 
 
 
