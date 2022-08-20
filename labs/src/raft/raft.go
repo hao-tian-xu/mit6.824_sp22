@@ -37,14 +37,6 @@ import (
 	. "6.824/util"
 )
 
-// TIMING
-
-const (
-	_HeartbeatsInterval = 50 * time.Millisecond
-	_MinTimeout         = 8  // as number of heartbeats interval
-	_MaxTimeout         = 16 // as number of heartbeats interval
-)
-
 // TYPE
 
 //
@@ -169,7 +161,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	logEntry := LogEntry{command, index, term}
 
-	rf.logL(VBasic, TClient, "append log: %v (Start)", logEntry)
+	rf.logL(VBasic, TClient1, "append log: %v (Start)", logEntry)
 
 	// Leaders:
 	//	If command received from client: append entry to local log
@@ -202,7 +194,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.lock("(Snapshot)")
 	defer rf.unlock("(Snapshot)")
 
-	rf.logL(VBasic, TClient, "snapshot at %v", index)
+	rf.logL(VBasic, TClient1, "snapshot at %v", index)
 
 	rf.trimLogL(index)
 	rf.snapshot = Snapshot{rf.log[0].Index, rf.log[0].Term, snapshot}
@@ -248,11 +240,11 @@ func (rf *Raft) nPeers() int {
 }
 
 func (rf *Raft) resetElectionTimeoutL(init bool) {
-	randTimeout := time.Duration(rand.Int() % (_MaxTimeout - _MinTimeout))
+	randTimeout := time.Duration(rand.Int() % (MaxTimeout - MinTimeout))
 	if init {
-		rf.electionTimeout = time.Now().Add(randTimeout * _HeartbeatsInterval)
+		rf.electionTimeout = time.Now().Add(randTimeout * HeartbeatsInterval)
 	} else {
-		rf.electionTimeout = time.Now().Add((_MinTimeout + randTimeout) * _HeartbeatsInterval)
+		rf.electionTimeout = time.Now().Add((MinTimeout + randTimeout) * HeartbeatsInterval)
 	}
 }
 
@@ -671,7 +663,7 @@ func (rf *Raft) applySignalL() {
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		rf.tick()
-		time.Sleep(_HeartbeatsInterval)
+		time.Sleep(HeartbeatsInterval)
 	}
 }
 

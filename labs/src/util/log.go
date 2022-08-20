@@ -38,10 +38,14 @@ const (
 	TTrace LogTopic = "TRCE"
 	TError LogTopic = "ERRO"
 	TWarn  LogTopic = "WARN"
-	//	server
-	TClient   LogTopic = "CLNT"
-	TKVServer LogTopic = "KVSR"
-	TCtrler   LogTopic = "CTLR"
+	//	shard controller
+	TClient1 LogTopic = "CLT1"
+	TClient2 LogTopic = "CLT2"
+	TCtrler1 LogTopic = "CTR1"
+	TCtrler2 LogTopic = "CTR2"
+	//	kv
+	TKVServer1 LogTopic = "KVS1"
+	TKVServer2 LogTopic = "KVS2"
 	//	tester
 	TTester LogTopic = "TSTR"
 )
@@ -86,7 +90,7 @@ func LogTest(verbosity LogVerbosity, topic LogTopic, peerId int, format string, 
 // raft log wrapper
 //
 func LogRaft(verbosity LogVerbosity, topic LogTopic, peerId int, term int, format string, a ...interface{}) {
-	_log("R", verbosity, topic, peerId, term, format, a...)
+	_log("R", 10, topic, peerId, term, format, a...)
 }
 
 //

@@ -1,5 +1,7 @@
 package shardctrler
 
+import "fmt"
+
 //
 // Shard controler: assigns shards to replication groups.
 //
@@ -20,6 +22,22 @@ package shardctrler
 // The number of shards.
 const NShards = 10
 
+// OP CONST
+
+const (
+	opQuery = "Query"
+	opJoin  = "Join"
+	opLeave = "Leave"
+	opMove  = "Move"
+
+	rpcQuery = "ShardCtrler.Query"
+	rpcJoin  = "ShardCtrler.Join"
+	rpcLeave = "ShardCtrler.Leave"
+	rpcMove  = "ShardCtrler.Move"
+)
+
+// CONFIG
+
 // A configuration -- an assignment of shards to groups.
 // Please don't change this.
 type Config struct {
@@ -28,14 +46,9 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
-const (
-	opQuery = "Query"
-	opJoin  = "Join"
-	opLeave = "Leave"
-	opMove  = "Move"
-)
-
 type Err string
+
+// RPC TYPES
 
 type JoinArgs struct {
 	Servers map[int][]string // new GID -> servers mappings
@@ -44,11 +57,19 @@ type JoinArgs struct {
 	OpId     int
 }
 
+func (j JoinArgs) String() string {
+	return fmt.Sprintf("Join%v-%v %v", j.ClientId, j.OpId, fmt.Sprint(groupsToGids(j.Servers)))
+}
+
 type LeaveArgs struct {
 	GIDs []int
 
 	ClientId int
 	OpId     int
+}
+
+func (l LeaveArgs) String() string {
+	return fmt.Sprintf("Leave%v-%v %v", l.ClientId, l.OpId, fmt.Sprint(l.GIDs))
 }
 
 type MoveArgs struct {
@@ -59,6 +80,10 @@ type MoveArgs struct {
 	OpId     int
 }
 
+func (m MoveArgs) String() string {
+	return fmt.Sprintf("Move%v-%v %v->%v", m.ClientId, m.OpId, m.Shard, m.GID)
+}
+
 type QueryArgs struct {
 	Num int // desired config number
 
@@ -66,11 +91,29 @@ type QueryArgs struct {
 	OpId     int
 }
 
-type OpReply struct {
-	WrongLeader bool
-	Err         Err
-	Config      Config
+func (q QueryArgs) String() string {
+	return fmt.Sprintf("Query%v-%v %v", q.ClientId, q.OpId, q.Num)
+}
 
-	// Additional
-	CurrentLeader int
+type OpReply struct {
+	Err    Err
+	Config Config
+}
+
+func (r OpReply) String() string {
+	s := fmt.Sprintf("%v", r.Err)
+	if r.Config.Num != 0 {
+		s += fmt.Sprintf(", config %v", r.Config.Shards)
+	}
+	return s
+}
+
+// HELPER FUNCTION
+
+func groupsToGids(groups map[int][]string) []int {
+	gids := make([]int, 0)
+	for gid, _ := range groups {
+		gids = append(gids, gid)
+	}
+	return gids
 }

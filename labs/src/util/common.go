@@ -6,8 +6,11 @@ const (
 	NA = -1
 
 	// timing
-	MinInterval        = 10 * time.Millisecond
-	HeartBeatsInterval = 50 * time.Millisecond
+	HeartbeatsInterval = 50 * time.Millisecond
+	MinTimeout         = 8  // as number of heartbeats interval
+	MaxTimeout         = 16 // as number of heartbeats interval
+
+	MinInterval = 10 * time.Millisecond
 
 	// raft role
 	Leader    = "Leader"

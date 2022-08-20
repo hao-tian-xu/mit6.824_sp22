@@ -14,7 +14,7 @@ import typer
 TOPICS = {
     "LEAD": "yellow",           # raft leader and send append
     "APND": "bright_yellow",    # raft append
-    "SNAP": "bright_blue",            # server snapshot
+    "SNAP": "bright_blue",      # server snapshot
     "CAND": "green",            # raft candidate
     "VOTE": "bright_cyan",      # raft vote
     "DEMO": "black",            # raft demotion
@@ -22,16 +22,19 @@ TOPICS = {
     "LOG0": "dark_blue",        # raft log fail
     "LOG1": "blue",             # raft log success
     "CMIT": "bright_black",     # raft commit
-    "APLY": "dark_blue",            # server apply
+    "APLY": "dark_blue",        # server apply
 
     "REDO": "dark_red",         # resend
     "TRCE": "bright_white",     # trace
     "ERRO": "dark_red",         # error
     "WARN": "bright_red",       # warn
 
-    "CLNT": "magenta",          # client
-    "KVSR": "yellow",           # kvserver
-    "CTLR": "yellow",           # shard controller
+    "CLT1": "green",            # client
+    "CLT2": "bright_cyan",      # client
+    "CTR1": "yellow",           # shard controller
+    "CTR2": "bright_yellow",    # shard controller
+
+    "KVS1": "yellow",           # kvserver
 
     "TSTR": "purple",           # tester
 }
