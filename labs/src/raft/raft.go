@@ -194,11 +194,15 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.lock("(Snapshot)")
 	defer rf.unlock("(Snapshot)")
 
-	rf.logL(VBasic, TClient1, "snapshot at %v", index)
+	if index > rf.logFirstIndexL() {
+		rf.logL(VBasic, TClient1, "snapshot at %v", index)
 
-	rf.trimLogL(index)
-	rf.snapshot = Snapshot{rf.log[0].Index, rf.log[0].Term, snapshot}
-	rf.persistL()
+		rf.trimLogL(index)
+		rf.snapshot = Snapshot{rf.log[0].Index, rf.log[0].Term, snapshot}
+		rf.persistL()
+	} else {
+		rf.logL(VBasic, TClient1, "%v already snapshotted", index)
+	}
 }
 
 //

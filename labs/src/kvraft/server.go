@@ -5,48 +5,17 @@ import (
 	"6.824/labrpc"
 	"6.824/raft"
 	"bytes"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 )
-
-const (
-	_NA = -1
-
-	// log verbosity level
-	vBasic LogVerbosity = iota
-	vVerbose
-	vExcessive
-
-	// log topic
-	tTrace    LogTopic = "TRCE"
-	tError    LogTopic = "ERRO"
-	tSnapshot LogTopic = "SNAP"
-
-	tClient   LogTopic = "CLNT"
-	tKVServer LogTopic = "KVSR"
-
-	// timing
-	_MinInterval       = 10 * time.Millisecond
-	_HeartBeatInterval = 100 * time.Millisecond
-)
-
-const Debug = false
-
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
-		log.Printf(format, a...)
-	}
-	return
-}
+import . "6.824/util"
 
 // DATA TYPE
 
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
 	OpType string
 	Key    string
 	Value  string
@@ -54,6 +23,38 @@ type Op struct {
 	ClientId int
 	OpId     int
 }
+
+func (op *Op) String() string {
+	if op.OpType == opGet {
+		return fmt.Sprintf("%v%v-%v %v", op.OpType, op.ClientId, op.OpId, op.Key)
+	} else {
+		return fmt.Sprintf("%v%v-%v %v:%v", op.OpType, op.ClientId, op.OpId, op.Key, op.Value)
+	}
+}
+
+type LastOp struct {
+	Op        Op
+	GetResult string
+}
+
+func (l *LastOp) String() string {
+	return fmt.Sprintf("%v-%v", l.Op.ClientId, l.Op.OpId)
+}
+
+//
+// transfer op result among methods
+//
+type _Result struct {
+	err   Err
+	value string
+	op    *Op
+}
+
+func (r _Result) String() string {
+	return fmt.Sprintf("%v %v", r.err, r.op)
+}
+
+// KV SERVER
 
 type KVServer struct {
 	mu      sync.Mutex
@@ -64,101 +65,223 @@ type KVServer struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	// Your definitions here.
-	kvMap     map[string]string // kv storage
-	lastOpMap map[int]LastOp    // save last processed Op for eache client
-	// channels for ApplyMsg transfer
-	applyOpChans map[int]chan Op
+	kvMap map[string]string // kv storage
 
-	persister *raft.Persister
+	lastOps     map[int]*LastOp      // clientId -> LastOp
+	resultChans map[int]chan _Result // commandIndex -> chan _Result
+	persister   *raft.Persister
 }
 
-type LastOp struct {
-	Op        Op
-	GetResult string
-}
-
-// RPC
+// RPC HANDLER
 
 func (kv *KVServer) Get(args *GetArgs, reply *OpReply) {
-	// Your code here.
-	op := Op{OpType: opGet, Key: args.Key, ClientId: args.ClientId, OpId: args.OpId}
-	kv.processOp(opGet, &op, reply)
+	kv.lock("Get")
+	defer kv.unlock("Get")
+
+	op := &Op{OpType: opGet, Key: args.Key,
+		ClientId: args.ClientId, OpId: args.OpId}
+	kv.processOpL(op, reply)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *OpReply) {
-	// Your code here.
-	op := Op{OpType: args.Op, Key: args.Key, Value: args.Value, ClientId: args.ClientId, OpId: args.OpId}
-	kv.processOp(args.Op, &op, reply)
+	kv.lock("Get")
+	defer kv.unlock("Get")
+	op := &Op{OpType: args.Op, Key: args.Key, Value: args.Value,
+		ClientId: args.ClientId, OpId: args.OpId}
+	kv.processOpL(op, reply)
 }
 
 //
 // process RPC request
 //
-func (kv *KVServer) processOp(opType string, op *Op, reply *OpReply) {
-	kv.mu.Lock()
+func (kv *KVServer) processOpL(op *Op, reply *OpReply) {
+	kv.log(VBasic, TKVServer1, "process op %v, lastOp %v (processOpL)", op, kv.lastOps[op.ClientId])
+
 	// If op is the same as lastOp
-	if lastOp, ok := kv.lastOpMap[op.ClientId]; ok && lastOp.Op == *op {
-		kv.mu.Unlock()
-		LogKV(vBasic, tTrace, kv.me, "processed... (%v) (processOp)\n", opType)
+	if lastOp, ok := kv.lastOps[op.ClientId]; ok && lastOp.Op == *op {
 		reply.Err, reply.Value = OK, lastOp.GetResult
 		return
 	}
 
 	// Send op to raft by rf.Start()
-	commandIndex, _, isLeader, currentLeader := kv.rf.StartWithCurrentLeader(*op)
-	//		if not isLeader
+	commandIndex, _, isLeader := kv.rf.Start(*op)
+	//	if not leader
 	if !isLeader {
-		kv.mu.Unlock()
-		LogKV(vVerbose, tTrace, kv.me, "notLeader... (%v) (processOp)\n", opType)
-		reply.Err, reply.CurrentLeader = ErrWrongLeader, currentLeader
+		reply.Err = ErrWrongLeader
 		return
 	}
 
-	// make a channel for Op transfer, if not existing
-	if _, ok := kv.applyOpChans[commandIndex]; !ok {
-		kv.applyOpChans[commandIndex] = make(chan Op)
-	}
-
-	kv.mu.Unlock()
-
 	// Wait for the op to be applied
-	applied := kv.waitApply(commandIndex, op)
+	result := kv.waitApplyL(commandIndex, op)
 
-	kv.mu.Lock()
-	value, exist := kv.kvMap[op.Key] // TODO: wrong place to check exist for both Get and Append (may let APPLY_MSG decide)
-	kv.mu.Unlock()
+	reply.Err = result.err
+	reply.Value = result.value
+}
 
-	// Reply to client (and log)
-	switch applied {
-	case OK:
-		switch opType {
-		case opGet:
-			if exist {
-				LogKV(vBasic, tKVServer, kv.me, "get %v/%v! (Get/processOp)\n", op.Key, value)
-				reply.Err, reply.Value = OK, value
-			} else {
-				LogKV(vBasic, tKVServer, kv.me, "get %v/nokey... (Get/processOp)\n", op.Key)
-				reply.Err, reply.Value = ErrNoKey, ""
-			}
-		case opPut:
-			LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Put/processOp)\n", op.Key, op.Value)
-			reply.Err = OK
-		case opAppend:
-			if exist {
-				LogKV(vBasic, tKVServer, kv.me, "append %v/%v! (Append/processOp)\n", op.Key, op.Value)
-			} else {
-				LogKV(vBasic, tKVServer, kv.me, "put %v/%v! (Append/processOp)\n", op.Key, op.Value)
-			}
-			reply.Err = OK
-		}
-	case ErrNotApplied:
-		LogKV(vBasic, tKVServer, kv.me, "%v %v/%v notApplied... (processOp)\n", opType, op.Key, op.Value)
-		reply.Err = ErrNotApplied
-	case ErrTimeout:
-		LogKV(vBasic, tKVServer, kv.me, "%v %v/%v timeout... (processOp)\n", opType, op.Key, op.Value)
-		reply.Err = ErrTimeout
+//
+// wait for the commandIndex to be applied in kvserver, return true if it's the same op
+//
+func (kv *KVServer) waitApplyL(commandIndex int, op *Op) _Result {
+	// Make a channel for _Result transfer, if not existing
+	if _, ok := kv.resultChans[commandIndex]; !ok {
+		kv.resultChans[commandIndex] = make(chan _Result)
 	}
+
+	ch := kv.resultChans[commandIndex]
+	result := _Result{}
+
+	// Wait for the commandIndex to be commited in raft and applied in kvserver
+	kv.unlock("waitApply")
+	select {
+	case result = <-ch:
+	case <-time.After(MaxTimeout * HeartbeatsInterval):
+		result.err = ErrTimeout
+	}
+	kv.lock("waitApply")
+
+	delete(kv.resultChans, commandIndex)
+
+	kv.log(VBasic, TKVServer1, "command %v apply result: %v (waitApplyL)", commandIndex, result)
+
+	// Process result
+	if result.err == OK && *op != *result.op {
+		result.err = ErrNotApplied
+	}
+
+	return result
+}
+
+// APPLIER
+
+//
+// iteratively receive ApplyMsg from raft and apply it to the kvserver, notify relevant RPC (leader server)
+//
+func (kv *KVServer) receiveApplyMsg() {
+	kv.lock("receiveApplyMsg")
+	defer kv.unlock("receiveApplyMsg")
+
+	for !kv.killed() {
+		kv.unlock("receiveApplyMsg")
+		applyMsg := <-kv.applyCh
+		kv.lock("receiveApplyMsg")
+
+		// If ApplyMsg is a command
+		if applyMsg.CommandValid {
+			op := applyMsg.Command.(Op)
+
+			result := kv.applyOpL(&op)
+
+			if ch, ok := kv.resultChans[applyMsg.CommandIndex]; ok {
+				result.op = &op
+
+				kv.unlock("receiveApplyMsg")
+				ch <- result
+				kv.lock("receiveApplyMsg")
+			}
+
+			// Take a snapshot if Raft state size is approaching maxraftstate
+			if kv.maxraftstate != NA && kv.persister.RaftStateSize() >= kv.maxraftstate {
+				kv.snapshotL(applyMsg.CommandIndex)
+			}
+		}
+
+		// If ApplyMsg is a snapshot
+		if applyMsg.SnapshotValid {
+			kv.readSnapshotL(applyMsg.Snapshot)
+		}
+	}
+}
+
+func (kv *KVServer) applyOpL(op *Op) _Result {
+	result := _Result{}
+	// If command is not processed
+	if lastOp, started := kv.lastOps[op.ClientId]; !started || *op != lastOp.Op {
+		kv.log(VBasic, TKVServer2, "%v applied! (receiveApplyMsg)", op)
+
+		result.err = OK
+
+		// Apply the command to kv server
+		value, ok := kv.kvMap[op.Key]
+		switch op.OpType {
+		case opPut:
+			kv.kvMap[op.Key] = op.Value
+		case opAppend:
+			if ok {
+				kv.kvMap[op.Key] += op.Value
+			} else {
+				kv.kvMap[op.Key] = op.Value
+			}
+		case opGet:
+			if ok {
+				result.value = value
+			} else {
+				result.err = ErrNoKey
+				result.value = ""
+			}
+		}
+		// Remember lastOp for each client
+		kv.lastOps[op.ClientId] = &LastOp{*op, value}
+
+	} else {
+		kv.log(VBasic, TWarn, "%v just processed... (receiveApplyMsg)", op)
+
+		result.err = ErrDuplicate
+	}
+	return result
+}
+
+// snapshot
+
+func (kv *KVServer) snapshotL(index int) {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(kv.kvMap) != nil ||
+		e.Encode(kv.lastOps) != nil {
+
+		log.Fatalln("snapshotL() failed!")
+	} else {
+		kv.log(VBasic, TSnapshot, "take snapshot %v", index)
+
+		snapshot := w.Bytes()
+		kv.rf.Snapshot(index, snapshot)
+	}
+}
+
+func (kv *KVServer) readSnapshotL(snapshot []byte) {
+	if snapshot == nil || len(snapshot) < 1 {
+		return
+	}
+
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	var kvMap map[string]string
+	var lastOps map[int]*LastOp
+	if d.Decode(&kvMap) != nil ||
+		d.Decode(&lastOps) != nil {
+
+		log.Fatalln("readSnapshotL() failed!")
+	} else {
+		kv.log(VBasic, TSnapshot, "read snapshot, lastOps %v", lastOps)
+
+		kv.kvMap = kvMap
+		kv.lastOps = lastOps
+	}
+}
+
+// HELPER
+
+func (kv *KVServer) log(verbose LogVerbosity, topic LogTopic, format string, a ...interface{}) {
+	LogKV(verbose, topic, kv.me, format, a...)
+}
+
+func (kv *KVServer) lock(method string) {
+	kv.log(VExcessive, TTrace, "acquire lock (%v)", method)
+	kv.mu.Lock()
+}
+
+func (kv *KVServer) unlock(method string) {
+	kv.log(VExcessive, TTrace, "release lock (%v)", method)
+	kv.mu.Unlock()
 }
 
 // KILL
@@ -184,135 +307,7 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-// APPLY_MSG
-
-//
-// wait for the commandIndex to be applied in kvserver, return true if it's the same op
-//
-func (kv *KVServer) waitApply(commandIndex int, op *Op) Err {
-	kv.mu.Lock()
-	ch := kv.applyOpChans[commandIndex]
-	kv.mu.Unlock()
-	// Wait for the commandIndex to be commited in raft and applied in kvserver
-	select {
-	case appliedOp := <-ch:
-		// return true if it's the same op
-		if appliedOp == *op {
-			LogKV(vVerbose, tTrace, kv.me, "command%v applied (waitApply)!", commandIndex)
-			return OK
-		} else {
-			return ErrNotApplied
-		}
-	case <-time.After(_HeartBeatInterval * 5):
-		return ErrTimeout
-	}
-}
-
-//
-// iteratively receive ApplyMsg from raft and apply it to the kvserver, notify relevant RPC (leader server)
-//
-func (kv *KVServer) receiveApplyMsg() {
-	var applyMsg raft.ApplyMsg
-	for !kv.killed() {
-		// Recieve ApplyMsg from raft
-		applyMsg = <-kv.applyCh
-		// if ApplyMsg is a command
-		if applyMsg.CommandValid {
-			// map command to Op
-			if op, ok := applyMsg.Command.(Op); ok {
-				kv.mu.Lock()
-				// command is not processed
-				if lastOp, started := kv.lastOpMap[op.ClientId]; !started || op != lastOp.Op {
-					// Apply the command to kvserver
-					value, ok := kv.kvMap[op.Key]
-					switch op.OpType {
-					case opPut:
-						kv.kvMap[op.Key] = op.Value
-					case opAppend:
-						if ok {
-							kv.kvMap[op.Key] += op.Value
-						} else {
-							kv.kvMap[op.Key] = op.Value
-						}
-					}
-					// remember last processed op and result
-					kv.lastOpMap[op.ClientId] = LastOp{op, value}
-
-					if op.OpType != opGet {
-						LogKV(vVerbose, tTrace, kv.me, "%v %v/%v applied! (receiveApplyMsg)\n", op.OpType, op.Key, op.Value)
-						LogKV(vVerbose, tTrace, kv.me, "%v: %v (receiveApplyMsg)", op.Key, kv.kvMap[op.Key])
-					}
-				} else {
-					// command already processed
-					LogKV(vVerbose, tTrace, kv.me, "%v %v/%v already processed... (receiveApplyMsg)\n", op.OpType, op.Key, op.Value)
-				}
-
-				// Send Op to RPC if relevant channel exists
-				ch, ok := kv.applyOpChans[applyMsg.CommandIndex]
-				kv.mu.Unlock()
-				if ok {
-					select {
-					case ch <- op:
-					case <-time.After(_MinInterval):
-						LogKV(vVerbose, tTrace, kv.me, "chan%v blocked... (receiveApplyMsg)\n", applyMsg.CommandIndex)
-					}
-				} else {
-					LogKV(vVerbose, tTrace, kv.me, "chan%v doesn't exist... (receiveApplyMsg)\n", applyMsg.CommandIndex)
-				}
-
-				// Take a snapshot if Raft state size is approaching maxraftstate
-				if kv.maxraftstate != _NA && kv.persister.RaftStateSize() >= kv.maxraftstate {
-					LogKV(vBasic, tSnapshot, kv.me, "take snapshot%v (receiveApplyMsg)\n", applyMsg.CommandIndex)
-					kv.snapshot(applyMsg.CommandIndex)
-				}
-			} else {
-				// map command to Op failed
-				log.Fatalln("command not op!!")
-			}
-		} else if applyMsg.SnapshotValid {
-			LogKV(vBasic, tSnapshot, kv.me, "read snapshot (receiveApplyMsg)\n")
-			kv.readSnapshot(applyMsg.Snapshot)
-		}
-	}
-}
-
-func (kv *KVServer) snapshot(index int) {
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	kv.mu.Lock()
-	if e.Encode(kv.kvMap) != nil ||
-		e.Encode(kv.lastOpMap) != nil {
-		kv.mu.Unlock()
-
-		log.Fatalln("snapshot() failed!")
-	} else {
-		kv.mu.Unlock()
-		snapshot := w.Bytes()
-		kv.rf.Snapshot(index, snapshot)
-	}
-}
-
-func (kv *KVServer) readSnapshot(snapshot []byte) {
-	if snapshot == nil || len(snapshot) < 1 {
-		return
-	}
-	r := bytes.NewBuffer(snapshot)
-	d := labgob.NewDecoder(r)
-	var kvMap map[string]string
-	var lastOpMap map[int]LastOp
-	if d.Decode(&kvMap) != nil ||
-		d.Decode(&lastOpMap) != nil {
-
-		log.Fatalln("readSnapshot() failed!")
-	} else {
-		kv.mu.Lock()
-		kv.kvMap = kvMap
-		kv.lastOpMap = lastOpMap
-		kv.mu.Unlock()
-	}
-}
-
-// START KVSERVER
+// START
 
 //
 // servers[] contains the ports of the set of
@@ -337,21 +332,19 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 
-	// You may need initialization code here.
-	LogKV(vVerbose, tKVServer, kv.me, "new kvServer!")
+	kv.log(VBasic, TKVServer2, "start kv server")
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.kvMap = map[string]string{}
-	kv.lastOpMap = map[int]LastOp{}
 
-	kv.applyOpChans = map[int]chan Op{}
-
+	kv.lastOps = map[int]*LastOp{}
+	kv.resultChans = map[int]chan _Result{}
 	kv.persister = persister
 
 	// Use snapshot to recover
-	kv.readSnapshot(kv.persister.ReadSnapshot())
+	kv.readSnapshotL(kv.persister.ReadSnapshot())
 
 	// You may need initialization code here.
 	// Start receiving ApplyMsg from raft

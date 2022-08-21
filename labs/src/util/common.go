@@ -20,11 +20,14 @@ const (
 	// server err
 	OK             = "OK"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrNoKey       = "ErrNoKey"
 
 	ErrNotApplied = "ErrNotApplied"
 	ErrTimeout    = "ErrTimeout"
 	ErrDuplicate  = "ErrDuplicate"
 )
+
+type Err string
 
 func Min(a int, b int) int {
 	if a < b {

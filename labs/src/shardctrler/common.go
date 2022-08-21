@@ -1,6 +1,7 @@
 package shardctrler
 
 import "fmt"
+import . "6.824/util"
 
 //
 // Shard controler: assigns shards to replication groups.
@@ -45,8 +46,6 @@ type Config struct {
 	Shards [NShards]int     // shard -> gid
 	Groups map[int][]string // gid -> servers[]
 }
-
-type Err string
 
 // RPC TYPES
 
@@ -100,10 +99,10 @@ type OpReply struct {
 	Config Config
 }
 
-func (r OpReply) String() string {
-	s := fmt.Sprintf("%v", r.Err)
-	if r.Config.Num != 0 {
-		s += fmt.Sprintf(", config %v", r.Config.Shards)
+func (o OpReply) String() string {
+	s := fmt.Sprintf("%v", o.Err)
+	if o.Config.Num != 0 {
+		s += fmt.Sprintf(", config %v", o.Config.Shards)
 	}
 	return s
 }

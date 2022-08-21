@@ -120,12 +120,13 @@ func (ck *Clerk) unlock(method string) {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	// Your code here.
+
 	ck.log(VBasic, TClient2, "start client")
 
 	clientId++
 	ck.me = clientId % 100 // personally limit client id to 2 digits
 	ck.currentLeader = 0
 	ck.nextOpId = 0
+
 	return ck
 }

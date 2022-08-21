@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"time"
 )
 import "6.824/labrpc"
 import "sync"
 import "6.824/labgob"
 
-// TYPES
+// DATA TYPE
 
 type Op struct {
-	// Your data here.
 	OpType string
 	// Join
 	Servers map[int][]string
@@ -78,10 +78,8 @@ type ShardCtrler struct {
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
 
-	// Your data here.
-	configs []Config // indexed by config num
-
-	gidShards map[int][]int
+	configs   []Config      // indexed by config num
+	gidShards map[int][]int // data structure to generate configs
 
 	lastOps     map[int]*_LastOp     // clientId -> _LastOp
 	resultChans map[int]chan _Result // commandIndex -> chan _Result
@@ -139,8 +137,7 @@ func (sc *ShardCtrler) processOpL(op *Op, reply *OpReply) {
 
 	// Send op to raft by rf.Start()
 	commandIndex, _, isLeader := sc.rf.Start(*op)
-
-	//	if not isLeader
+	//	if not leader
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
@@ -161,11 +158,17 @@ func (sc *ShardCtrler) waitApplyL(commandIndex int, op *Op) _Result {
 	if _, ok := sc.resultChans[commandIndex]; !ok {
 		sc.resultChans[commandIndex] = make(chan _Result)
 	}
+
 	ch := sc.resultChans[commandIndex]
+	result := _Result{}
 
 	// Wait for the commandIndex to be commited in raft and applied in kvserver
 	sc.unlock("waitApply")
-	result := <-ch
+	select {
+	case result = <-ch:
+	case <-time.After(MaxTimeout * HeartbeatsInterval):
+		result.err = ErrTimeout
+	}
 	sc.lock("waitApply")
 
 	delete(sc.resultChans, commandIndex)
@@ -472,7 +475,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.applyCh = make(chan raft.ApplyMsg)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 
-	// Your code here.
 	sc.gidShards = map[int][]int{}
 
 	sc.lastOps = map[int]*_LastOp{}

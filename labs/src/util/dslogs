@@ -12,31 +12,40 @@ import typer
 # fmt: off
 # Mapping from topics to colors
 TOPICS = {
-    "LEAD": "yellow",           # raft leader and send append
-    "APND": "bright_yellow",    # raft append
-    "SNAP": "bright_blue",      # server snapshot
-    "CAND": "green",            # raft candidate
+    # Leader: Yellow
+    "LEAD": "yellow",           # leader and rpc send
+    "APND": "bright_yellow",    # append receive and reply
+    "SNAP": "gold1",            # snapshot recieve and reply
+    # Candidate: Cyan
+    "CAND": "cyan",             # raft candidate
     "VOTE": "bright_cyan",      # raft vote
+    # Grey
     "DEMO": "black",            # raft demotion
     "TICK": "bright_white",     # raft tick
-    "LOG0": "dark_blue",        # raft log fail
-    "LOG1": "blue",             # raft log success
-    "CMIT": "bright_black",     # raft commit
-    "APLY": "dark_blue",        # server apply
+    # Log: Blue
+    "LOG0": "blue",             # raft log fail
+    "LOG1": "bright_blue",      # raft log success
+    "CMIT": "sky_blue1",        # raft commit
+    "APLY": "deep_sky_blue4",   # server apply
 
-    "REDO": "dark_red",         # resend
-    "TRCE": "bright_white",     # trace
+    # Client: Green
+    "CLT1": "green",            # client
+    "CLT2": "light_green",      # client
+
+    # KV Server: Orange
+    "KVS1": "dark_orange3",     # kvserver
+    "KVS2": "navajo_white1",    # kvserver
+    # Controller: Olive
+    "CTR1": "dark_khaki",       # shard controller
+    "CTR2": "dark_olive_green1",# shard controller
+
+    # Tester: Purple
+    "TSTR": "purple",           # tester
+
+    # Warn: Red
     "ERRO": "dark_red",         # error
     "WARN": "bright_red",       # warn
-
-    "CLT1": "green",            # client
-    "CLT2": "bright_cyan",      # client
-    "CTR1": "yellow",           # shard controller
-    "CTR2": "bright_yellow",    # shard controller
-
-    "KVS1": "yellow",           # kvserver
-
-    "TSTR": "purple",           # tester
+    "TRCE": "bright_white",     # trace
 }
 # fmt: on
 

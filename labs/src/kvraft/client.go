@@ -5,52 +5,22 @@ import (
 	"sync"
 	"time"
 )
-import "crypto/rand"
-import "math/big"
+import . "6.824/util"
 
 // VAR, CONST AND TYPE
 
-var clientId = _NA
+var clientId = NA
 
-const (
-	// RPC call name
-	rpcGet       = "KVServer.Get"
-	rpcPutAppend = "KVServer.PutAppend"
-)
+// CLERK
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
 	sync.Mutex        // lock
 	me            int // client id (increasing order)
-	nServers      int // number of kvservers
 	currentLeader int // assumed leader id
 	nextOpId      int // next op id (to identify op)
 }
-
-func nrand() int64 {
-	max := big.NewInt(int64(1) << 62)
-	bigx, _ := rand.Int(rand.Reader, max)
-	x := bigx.Int64()
-	return x
-}
-
-// MAKE CLERK
-
-func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
-	ck := new(Clerk)
-	ck.servers = servers
-	// You'll have to add code here.
-	clientId++
-	ck.me = clientId % 100 // personally limit client id to 2 digits
-	ck.nServers = len(servers)
-	ck.currentLeader = 0
-	ck.nextOpId = 0
-	LogClient(vBasic, tClient, ck.me, "new client!\n")
-	return ck
-}
-
-// RPC STUB
 
 //
 // fetch the current value for a key.
@@ -65,17 +35,11 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
+	ck.lock("Get")
+	defer ck.unlock("Get")
 
-	// You will have to modify this function.
-
-	// get unique op id
-	ck.Lock()
-	opId := ck.nextOpId
-	ck.nextOpId++
-	ck.Unlock()
-
-	LogClient(vBasic, tClient, ck.me, "RPC Get %v\n", key)
-	return ck.sendOp(opId, key, "", opGet)
+	args := &GetArgs{key, ck.me, ck.nextOpId}
+	return ck.sendOpL(args, rpcGet, args.String())
 }
 
 //
@@ -89,76 +53,42 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	ck.lock("PutAppend")
+	defer ck.unlock("PutAppend")
 
-	// get unique op id
-	ck.Lock()
-	opId := ck.nextOpId
-	ck.nextOpId++
-	ck.Unlock()
-
-	LogClient(vBasic, tClient, ck.me, "RPC %v %v/%v\n", op, key, value)
-	ck.sendOp(opId, key, value, op)
+	args := &PutAppendArgs{key, value, op, ck.me, ck.nextOpId}
+	ck.sendOpL(args, rpcPutAppend, args.String())
 }
 
-//
-// send RPC and process its reply
-//
-func (ck *Clerk) sendOp(opId int, key string, value string, op string) string {
-	ck.Lock()
+func (ck *Clerk) sendOpL(args interface{}, rpc string, format string) string {
+	ck.log(VBasic, TClient1, "%v send to %v (sendOpL)", format, ck.currentLeader)
+	defer ck.log(VBasic, TClient1, "%v return from %v (sendOpL)", format, ck.currentLeader)
+
+	ck.nextOpId++
+	return ck._sendOpL(args, rpc, format)
+}
+
+func (ck *Clerk) _sendOpL(args interface{}, rpc string, format string) string {
 	leaderId := ck.currentLeader
-	ck.Unlock()
+	reply := &OpReply{}
 
-	// RPC Call
-	reply := OpReply{}
-	var ok bool
-	LogClient(vExcessive, tTrace, ck.me, "RPC %v %v/%v\n", op, key, value)
-	if op == opGet {
-		args := GetArgs{key, ck.me, opId}
-		ok = ck.servers[leaderId].Call(rpcGet, &args, &reply)
-	} else {
-		args := PutAppendArgs{key, value, op, ck.me, opId}
-		ok = ck.servers[leaderId].Call(rpcPutAppend, &args, &reply)
-	}
+	ck.unlock("_sendOpL")
+	ok := ck.servers[leaderId].Call(rpc, args, reply)
+	ck.lock("_sendOpL")
 
-	// process RPC reply
 	if ok {
-		// Send RPC successed
+		ck.log(VVerbose, TClient2, "reply from %v: %v (_sendOpL)", leaderId, reply)
+
 		if reply.Err == OK {
 			return reply.Value
-		} else if reply.Err == ErrNoKey {
-			return ""
-		} else {
-			// other conditions: retry
-			if reply.Err == ErrWrongLeader {
-				if reply.CurrentLeader == _NA {
-					// server doesn't know currentLeader
-					LogKV(vExcessive, tTrace, ck.me, "random leader...\n")
-					ck.randomServer()
-					time.Sleep(_HeartBeatInterval) // TODO: maybe too long
-				} else {
-					// update currentLeader
-					ck.Lock()
-					if reply.CurrentLeader != ck.currentLeader {
-						LogKV(vExcessive, tTrace, ck.me, "leader %v->%v!\n", ck.currentLeader, reply.CurrentLeader)
-						ck.currentLeader = reply.CurrentLeader
-						ck.Unlock()
-					} else {
-						ck.Unlock()
-						ck.randomServer()
-					}
-				}
-			} else if reply.Err == ErrTimeout {
-				ck.randomServer()
-			}
-			return ck.sendOp(opId, key, value, op)
 		}
-	} else {
-		// Send RPC failed: retry
-		LogClient(vVerbose, tError, ck.me, "RPC %v %v/%v failed...\n", op, key, value)
-		ck.randomServer()
-		return ck.sendOp(opId, key, value, op)
+		if reply.Err == ErrNoKey {
+			return ""
+		}
 	}
+
+	ck.changeLeaderL()
+	return ck._sendOpL(args, rpc, format)
 }
 
 func (ck *Clerk) Put(key string, value string) {
@@ -171,14 +101,44 @@ func (ck *Clerk) Append(key string, value string) {
 
 // HELPER
 
-//
-// change currentLeader to retry
-//
-func (ck *Clerk) randomServer() {
-	ck.Lock()
+func (ck *Clerk) changeLeaderL() {
 	ck.currentLeader++
-	if ck.currentLeader >= ck.nServers {
+	if ck.currentLeader >= len(ck.servers) {
 		ck.currentLeader = 0
 	}
+
+	ck.unlock("changeLeaderL")
+	time.Sleep(HeartbeatsInterval)
+	ck.lock("changeLeaderL")
+}
+
+func (ck *Clerk) log(verbose LogVerbosity, topic LogTopic, format string, a ...interface{}) {
+	LogKVClnt(verbose, topic, ck.me, format, a...)
+}
+
+func (ck *Clerk) lock(method string) {
+	ck.log(VExcessive, TTrace, "acquire lock (%v)", method)
+	ck.Lock()
+}
+
+func (ck *Clerk) unlock(method string) {
+	ck.log(VExcessive, TTrace, "release lock (%v)", method)
 	ck.Unlock()
+}
+
+// MAKE CLERK
+
+func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
+	ck := new(Clerk)
+	ck.servers = servers
+
+	clientId++
+	ck.me = clientId % 100 // personally limit client id to 2 digits
+
+	ck.log(VBasic, TClient2, "start client")
+
+	ck.currentLeader = 0
+	ck.nextOpId = 0
+
+	return ck
 }

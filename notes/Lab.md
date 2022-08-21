@@ -407,6 +407,77 @@ ok      6.824/raft      499.867s
 
 
 
+## Part B: Sharded Key/Value Server
+
+- Each shardkv server operates as part of a replica group. Each replica group serves `Get`, `Put`, and `Append` operations for some of the key-space shards. 
+  - Use `key2shard()` in `client.go` to find which shard a key belongs to. Multiple replica groups cooperate to serve the complete set of shards. A single instance of the `shardctrler` service assigns shards to replica groups; 
+  - when this assignment changes, replica groups have to hand off shards to each other, while ensuring that clients do not see inconsistent responses.
+- Your storage system must provide a linearizable interface to applications that use its client interface. 
+  - That is, completed application calls to the `Clerk.Get()`, `Clerk.Put()`, and `Clerk.Append()` methods in `shardkv/client.go` must appear to have affected all replicas in the same order.
+  - A `Clerk.Get()` should see the value written by the most recent `Put`/`Append` to the same key. This must be true even when `Get`s and `Put`s arrive at about the same time as configuration changes.
+- Each of your shards is only required to make progress when a majority of servers in the shard's Raft replica group is alive and can talk to each other, and can talk to a majority of the `shardctrler` servers. 
+  - Your implementation must operate (serve requests and be able to re-configure as needed) even if a minority of servers in some replica group(s) are dead, temporarily unavailable, or slow.
+- A shardkv server is a member of only a single replica group. The set of servers in a given replica group will never change.
+- We supply you with `client.go` code that sends each RPC to the replica group responsible for the RPC's key. 
+  - It re-tries if the replica group says it is not responsible for the key; in that case, the client code asks the shard controller for the latest configuration and tries again. 
+  - You'll have to modify client.go as part of your support for dealing with duplicate client RPCs, much as in the kvraft lab.
+
+### Note
+
+- [ ] Your server should not call the shard controller's `Join()` handler. The tester will call `Join()` when appropriate.
+
+### Task
+
+- Your first task is to pass the very first shardkv test. In this test, there is only a single assignment of shards, so your code should be very similar to that of your Lab 3 server. 
+  - The biggest modification will be to have your server detect when a configuration happens and start accepting requests whose keys match shards that it now owns.
+
+### Task
+
+- Implement shard migration during configuration changes. 
+  - Make sure that all servers in a replica group do the migration at the same point in the sequence of operations they execute, so that they all either accept or reject concurrent client requests. 
+  - You should focus on passing the second test ("join then leave") before working on the later tests. 
+  - You are done with this task when you pass all tests up to, but not including, `TestDelete`.
+
+### Note
+
+- [ ] Your server will need to periodically poll the shardctrler to learn about new configurations. The tests expect that your code polls roughly every 100 milliseconds; more often is OK, but much less often may cause problems.
+- [ ] Servers will need to send RPCs to each other in order to transfer shards during configuration changes. The shardctrler's `Config` struct contains server names, but you need a `labrpc.ClientEnd` in order to send an RPC. You should use the `make_end()` function passed to `StartServer()` to turn a server name into a `ClientEnd`. `shardkv/client.go` contains code that does this.
+
+### Hint
+
+- [ ] Add code to `server.go` to periodically fetch the latest configuration from the shardctrler, and add code to reject client requests if the receiving group isn't responsible for the client's key's shard. You should still pass the first test.
+- [ ] Your server should respond with an `ErrWrongGroup` error to a client RPC with a key that the server isn't responsible for (i.e. for a key whose shard is not assigned to the server's group). Make sure your `Get`, `Put`, and `Append` handlers make this decision correctly in the face of a concurrent re-configuration.
+- [ ] Process re-configurations one at a time, in order.
+- [ ] If a test fails, check for gob errors (e.g. "gob: type not registered for interface ..."). Go doesn't consider gob errors to be fatal, although they are fatal for the lab.
+- [ ] You'll need to provide at-most-once semantics (duplicate detection) for client requests across shard movement.
+- [ ] Think about how the shardkv client and server should deal with `ErrWrongGroup`. Should the client change the sequence number if it receives `ErrWrongGroup`? Should the server update the client state if it returns `ErrWrongGroup` when executing a `Get`/`Put` request?
+- [ ] After a server has moved to a new configuration, it is acceptable for it to continue to store shards that it no longer owns (though this would be regrettable in a real system). This may help simplify your server implementation.
+- [ ] When group G1 needs a shard from G2 during a configuration change, does it matter at what point during its processing of log entries G2 sends the shard to G1?
+- [ ] You can send an entire map in an RPC request or reply, which may help keep the code for shard transfer simple.
+- [ ] If one of your RPC handlers includes in its reply a map (e.g. a key/value map) that's part of your server's state, you may get bugs due to races. The RPC system has to read the map in order to send it to the caller, but it isn't holding a lock that covers the map. Your server, however, may proceed to modify the same map while the RPC system is reading it. The solution is for the RPC handler to include a copy of the map in the reply.
+- [ ] If you put a map or a slice in a Raft log entry, and your key/value server subsequently sees the entry on the `applyCh` and saves a reference to the map/slice in your key/value server's state, you may have a race. Make a copy of the map/slice, and store the copy in your key/value server's state. The race is between your key/value server modifying the map/slice and Raft reading it while persisting its log.
+- [ ] During a configuration change, a pair of groups may need to move shards in both directions between them. If you see deadlock, this is a possible source.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

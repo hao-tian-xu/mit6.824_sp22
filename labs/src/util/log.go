@@ -13,41 +13,50 @@ import (
 const (
 	// Verbosity
 	//	basic
+
 	VBasic LogVerbosity = iota + 1
 	VVerbose
 	VExcessive
 	//	additional
+
 	VTemp  LogVerbosity = 0
 	VStale LogVerbosity = 10
 
 	// Topic
 	//	raft basic
-	TLeader     LogTopic = "LEAD"
-	TCandidate  LogTopic = "CAND"
-	TDemotion   LogTopic = "DEMO"
-	TVote       LogTopic = "VOTE"
-	TAppend     LogTopic = "APND"
-	TTick       LogTopic = "TICK"
+
+	TLeader   LogTopic = "LEAD"
+	TAppend   LogTopic = "APND"
+	TSnapshot LogTopic = "SNAP"
+
+	TCandidate LogTopic = "CAND"
+	TVote      LogTopic = "VOTE"
+
+	TDemotion LogTopic = "DEMO"
+	TTick     LogTopic = "TICK"
+	TCommit   LogTopic = "CMIT"
+	TApply    LogTopic = "APLY"
+
 	TLogFail    LogTopic = "LOG0"
 	TLogSuccess LogTopic = "LOG1"
-	TCommit     LogTopic = "CMIT"
-	TApply      LogTopic = "APLY"
-	TSnapshot   LogTopic = "SNAP"
-	//	extra
-	TRedo  LogTopic = "REDO"
-	TTrace LogTopic = "TRCE"
-	TError LogTopic = "ERRO"
-	TWarn  LogTopic = "WARN"
-	//	shard controller
+	//	client
+
 	TClient1 LogTopic = "CLT1"
 	TClient2 LogTopic = "CLT2"
-	TCtrler1 LogTopic = "CTR1"
-	TCtrler2 LogTopic = "CTR2"
-	//	kv
+	//	servers
+
+	TCtrler1   LogTopic = "CTR1"
+	TCtrler2   LogTopic = "CTR2"
 	TKVServer1 LogTopic = "KVS1"
 	TKVServer2 LogTopic = "KVS2"
 	//	tester
+
 	TTester LogTopic = "TSTR"
+	//	extra
+
+	TError LogTopic = "ERRO"
+	TWarn  LogTopic = "WARN"
+	TTrace LogTopic = "TRCE"
 )
 
 type (
@@ -82,29 +91,36 @@ func init() {
 
 // LOG FUNCTION
 
-func LogTest(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("T", verbosity, topic, peerId, NA, format, a...)
-}
+// raft
 
-//
-// raft log wrapper
-//
 func LogRaft(verbosity LogVerbosity, topic LogTopic, peerId int, term int, format string, a ...interface{}) {
-	_log("R", 10, topic, peerId, term, format, a...)
+	_log("R", verbosity, topic, peerId, term, format, a...)
 }
 
-//
-// controller log wrapper
-//
+// kv server
+
+func LogKV(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
+	_log("K", verbosity, topic, peerId, 0, format, a...)
+}
+
+func LogKVClnt(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
+	_log("C", verbosity, topic, peerId, 0, format, a...)
+}
+
+// shard controller
+
 func LogCtrler(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
 	_log("S", verbosity, topic, peerId, 0, format, a...)
 }
 
-//
-// controller client log wrapper
-//
 func LogCtrlerClnt(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
 	_log("C", verbosity, topic, peerId, 0, format, a...)
+}
+
+// tester
+
+func LogTest(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
+	_log("T", verbosity, topic, peerId, NA, format, a...)
 }
 
 //

@@ -1,25 +1,20 @@
 package kvraft
 
+import (
+	. "6.824/util"
+	"fmt"
+)
+
 // CONST AND TYPE
 
 const (
-	// reply Error Type
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongLeader = "ErrWrongLeader"
-	// Additional
-	ErrDuplicate  = "ErrDuplicate"
-	ErrNotApplied = "ErrNotApplied"
-	ErrFatal      = "ErrFatal"
-	ErrTimeout    = "ErrTimeout"
-
-	// Op type
 	opPut    = "Put"
 	opAppend = "Append"
 	opGet    = "Get"
-)
 
-type Err string
+	rpcGet       = "KVServer.Get"
+	rpcPutAppend = "KVServer.PutAppend"
+)
 
 // RPC ARGS AND REPLY
 
@@ -30,22 +25,35 @@ type PutAppendArgs struct {
 	Key   string
 	Value string
 	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+
 	ClientId int
 	OpId     int
+}
+
+func (p PutAppendArgs) String() string {
+	if p.Op == opPut {
+		return fmt.Sprintf("Put%v-%v %v:%v", p.ClientId, p.OpId, p.Key, p.Value)
+	} else {
+		return fmt.Sprintf("Append%v-%v %v:%v", p.ClientId, p.OpId, p.Key, p.Value)
+	}
 }
 
 type GetArgs struct {
 	Key string
-	// You'll have to add definitions here.
+
 	ClientId int
 	OpId     int
 }
 
+func (g GetArgs) String() string {
+	return fmt.Sprintf("Get%v-%v %v", g.ClientId, g.OpId, g.Key)
+}
+
 type OpReply struct {
-	Err           Err
-	Value         string
-	CurrentLeader int
+	Err   Err
+	Value string
+}
+
+func (o OpReply) String() string {
+	return fmt.Sprintf("%v %v", o.Err, o.Value)
 }
