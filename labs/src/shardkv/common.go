@@ -1,5 +1,17 @@
 package shardkv
 
+import "fmt"
+import . "6.824/util"
+
+const (
+	opPut    = "Put"
+	opAppend = "Append"
+	opGet    = "Get"
+
+	rpcGet       = "ShardKV.Get"
+	rpcPutAppend = "ShardKV.PutAppend"
+)
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -9,36 +21,40 @@ package shardkv
 // You will have to modify these definitions.
 //
 
-const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongGroup  = "ErrWrongGroup"
-	ErrWrongLeader = "ErrWrongLeader"
-)
-
-type Err string
-
 // Put or Append
 type PutAppendArgs struct {
-	// You'll have to add definitions here.
 	Key   string
 	Value string
 	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+
+	ClientId int
+	OpId     int
 }
 
-type PutAppendReply struct {
-	Err Err
+func (p PutAppendArgs) String() string {
+	if p.Op == opPut {
+		return fmt.Sprintf("Put%v-%v %v:%v", p.ClientId, p.OpId, p.Key, p.Value)
+	} else {
+		return fmt.Sprintf("Append%v-%v %v:%v", p.ClientId, p.OpId, p.Key, p.Value)
+	}
 }
 
 type GetArgs struct {
 	Key string
-	// You'll have to add definitions here.
+
+	ClientId int
+	OpId     int
 }
 
-type GetReply struct {
+func (g GetArgs) String() string {
+	return fmt.Sprintf("Get%v-%v %v", g.ClientId, g.OpId, g.Key)
+}
+
+type OpReply struct {
 	Err   Err
 	Value string
+}
+
+func (o OpReply) String() string {
+	return fmt.Sprintf("%v %v", o.Err, o.Value)
 }

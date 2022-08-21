@@ -2,12 +2,10 @@ package kvraft
 
 import (
 	"6.824/labrpc"
+	. "6.824/util"
 	"sync"
 	"time"
 )
-import . "6.824/util"
-
-// VAR, CONST AND TYPE
 
 var clientId = NA
 
@@ -79,11 +77,8 @@ func (ck *Clerk) _sendOpL(args interface{}, rpc string, format string) string {
 	if ok {
 		ck.log(VVerbose, TClient2, "reply from %v: %v (_sendOpL)", leaderId, reply)
 
-		if reply.Err == OK {
+		if reply.Err == OK || reply.Err == ErrNoKey {
 			return reply.Value
-		}
-		if reply.Err == ErrNoKey {
-			return ""
 		}
 	}
 

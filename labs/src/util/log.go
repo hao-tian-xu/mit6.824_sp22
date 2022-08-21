@@ -94,7 +94,7 @@ func init() {
 // raft
 
 func LogRaft(verbosity LogVerbosity, topic LogTopic, peerId int, term int, format string, a ...interface{}) {
-	_log("R", verbosity, topic, peerId, term, format, a...)
+	_log("R", 10, topic, peerId, term, format, a...)
 }
 
 // kv server
@@ -110,11 +110,11 @@ func LogKVClnt(verbosity LogVerbosity, topic LogTopic, peerId int, format string
 // shard controller
 
 func LogCtrler(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("S", verbosity, topic, peerId, 0, format, a...)
+	_log("S", 10, topic, peerId, 0, format, a...)
 }
 
 func LogCtrlerClnt(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("C", verbosity, topic, peerId, 0, format, a...)
+	_log("C", 10, topic, peerId, 0, format, a...)
 }
 
 // tester

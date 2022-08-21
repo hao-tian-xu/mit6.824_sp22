@@ -1,9 +1,7 @@
 package kvraft
 
-import (
-	. "6.824/util"
-	"fmt"
-)
+import "fmt"
+import . "6.824/util"
 
 // CONST AND TYPE
 

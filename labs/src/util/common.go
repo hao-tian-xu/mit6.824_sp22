@@ -25,6 +25,8 @@ const (
 	ErrNotApplied = "ErrNotApplied"
 	ErrTimeout    = "ErrTimeout"
 	ErrDuplicate  = "ErrDuplicate"
+
+	ErrWrongGroup = "ErrWrongGroup"
 )
 
 type Err string

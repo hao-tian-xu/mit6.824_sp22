@@ -284,8 +284,6 @@ func (kv *KVServer) unlock(method string) {
 	kv.mu.Unlock()
 }
 
-// KILL
-
 //
 // the tester calls Kill() when a KVServer instance won't
 // be needed again. for your convenience, we supply
