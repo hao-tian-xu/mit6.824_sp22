@@ -11,6 +11,8 @@ import "sync"
 import "math/rand"
 import "io/ioutil"
 
+import . "6.824/util"
+
 const linearizabilityCheckTimeout = 1 * time.Second
 
 func check(t *testing.T, ck *Clerk, key string, value string) {
@@ -49,6 +51,7 @@ func TestStaticShards(t *testing.T) {
 	// make sure that the data really is sharded by
 	// shutting down one shard and checking that some
 	// Get()s don't succeed.
+	LogTest(VBasic, TTester, NA, "shutdown group 1")
 	cfg.ShutdownGroup(1)
 	cfg.checklogs() // forbid snapshots
 
@@ -86,6 +89,7 @@ func TestStaticShards(t *testing.T) {
 	}
 
 	// bring the crashed shard/group back to life.
+	LogTest(VBasic, TTester, NA, "start group 1")
 	cfg.StartGroup(1)
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])

@@ -14,7 +14,8 @@ const (
 	// Verbosity
 	//	basic
 
-	VBasic LogVerbosity = iota + 1
+	VCrucial LogVerbosity = iota
+	VBasic
 	VVerbose
 	VExcessive
 	//	additional
@@ -67,10 +68,12 @@ type (
 // INIT CONFIGURATION
 
 var logStart time.Time
-var logVerbosity int
+var raftVerbosity int
+var kvVerbosity int
+var ctrlrVerbosity int
 
-func getVerbosity() int {
-	v := os.Getenv("VERBOSE")
+func getVerbosity(env string) int {
+	v := os.Getenv(env)
 	level := 0
 	if v != "" {
 		var err error
@@ -83,7 +86,9 @@ func getVerbosity() int {
 }
 
 func init() {
-	logVerbosity = getVerbosity()
+	raftVerbosity = getVerbosity("RV")
+	kvVerbosity = getVerbosity("KV")
+	ctrlrVerbosity = getVerbosity("CV")
 	logStart = time.Now()
 
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
@@ -94,27 +99,37 @@ func init() {
 // raft
 
 func LogRaft(verbosity LogVerbosity, topic LogTopic, peerId int, term int, format string, a ...interface{}) {
-	_log("R", 10, topic, peerId, term, format, a...)
+	if raftVerbosity >= int(verbosity) {
+		_log("R", verbosity, topic, peerId, term, format, a...)
+	}
 }
 
 // kv server
 
 func LogKV(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("K", verbosity, topic, peerId, 0, format, a...)
+	if kvVerbosity >= int(verbosity) {
+		_log("K", verbosity, topic, peerId, 0, format, a...)
+	}
 }
 
 func LogKVClnt(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("C", verbosity, topic, peerId, 0, format, a...)
+	if kvVerbosity >= int(verbosity) {
+		_log("C", verbosity, topic, peerId, 0, format, a...)
+	}
 }
 
 // shard controller
 
 func LogCtrler(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("S", 10, topic, peerId, 0, format, a...)
+	if ctrlrVerbosity >= int(verbosity) {
+		_log("S", verbosity, topic, peerId, 0, format, a...)
+	}
 }
 
 func LogCtrlerClnt(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("C", 10, topic, peerId, 0, format, a...)
+	if ctrlrVerbosity >= int(verbosity) {
+		_log("C", verbosity, topic, peerId, 0, format, a...)
+	}
 }
 
 // tester
@@ -127,17 +142,15 @@ func LogTest(verbosity LogVerbosity, topic LogTopic, peerId int, format string, 
 // a custom log function
 //
 func _log(role string, verbosity LogVerbosity, topic LogTopic, peerId int, term int, format string, a ...interface{}) {
-	if logVerbosity >= int(verbosity) {
-		_time := time.Since(logStart).Microseconds()
+	_time := time.Since(logStart).Microseconds()
 
-		sec := _time / 1e6
-		milliSec := (_time % 1e6) / 1e3
-		microSec := (_time % 1e3) / 1e2
+	sec := _time / 1e6
+	milliSec := (_time % 1e6) / 1e3
+	microSec := (_time % 1e3) / 1e2
 
-		timeFlag := fmt.Sprintf("%03d.%03d.%01d", sec, milliSec, microSec)
+	timeFlag := fmt.Sprintf("%03d.%03d.%01d", sec, milliSec, microSec)
 
-		prefix := fmt.Sprintf("%v %v %v%02d T%02d ", timeFlag, string(topic), role, peerId, term)
-		format = prefix + format
-		log.Printf(format, a...)
-	}
+	prefix := fmt.Sprintf("%v %v %v%02d T%02d ", timeFlag, string(topic), role, peerId, term)
+	format = prefix + format
+	log.Printf(format, a...)
 }

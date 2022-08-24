@@ -180,6 +180,10 @@ func (sc *ShardCtrler) waitApplyL(commandIndex int, op *Op) _Result {
 		result.err = ErrNotApplied
 	}
 
+	if result.err == OK && op.OpType != opQuery {
+		sc.log(VCrucial, TCtrler1, "%v applied", op)
+	}
+
 	return result
 }
 
@@ -405,6 +409,8 @@ func (sc *ShardCtrler) nowL() int {
 // debug
 
 func (sc *ShardCtrler) log(verbose LogVerbosity, topic LogTopic, format string, a ...interface{}) {
+	format = "CTRLR: " + format
+
 	LogCtrler(verbose, topic, sc.me, format, a...)
 }
 
@@ -473,7 +479,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 	labgob.Register(Op{})
 	sc.applyCh = make(chan raft.ApplyMsg)
-	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
+	//sc.rf = raft.Make(servers, me, persister, sc.applyCh)
+	sc.rf = raft.MakeName(servers, me, persister, sc.applyCh, "CTRLR")
 
 	sc.gidShards = map[int][]int{}
 

@@ -27,6 +27,7 @@ const (
 	ErrDuplicate  = "ErrDuplicate"
 
 	ErrWrongGroup = "ErrWrongGroup"
+	ErrBehind     = "ErrBehind"
 )
 
 type Err string
@@ -43,4 +44,21 @@ func Max(a int, b int) int {
 		return a
 	}
 	return b
+}
+
+func InSlice(value int, slice []int) bool {
+	for _, v := range slice {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
+func DeepCopy(kvMap map[string]string) map[string]string {
+	result := map[string]string{}
+	for k, v := range kvMap {
+		result[k] = v
+	}
+	return result
 }

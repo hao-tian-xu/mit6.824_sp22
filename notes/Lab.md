@@ -364,8 +364,8 @@ ok      6.824/raft      499.867s
 
 ## Part A: The Shard controller (30 points)
 
-- [ ] First you'll implement the shard controller, in `shardctrler/server.go` and `client.go`. 
-- [ ] When you're done, you should pass all the tests in the `shardctrler` directory
+- [x] First you'll implement the shard controller, in `shardctrler/server.go` and `client.go`. 
+- [x] When you're done, you should pass all the tests in the `shardctrler` directory
 
 ### Task
 
@@ -390,20 +390,20 @@ ok      6.824/raft      499.867s
 
 ### Task
 
-- [ ] Your task is to implement the interface specified above in `client.go` and `server.go` in the `shardctrler/` directory. 
-  - [ ] Your shardctrler must be fault-tolerant, using your Raft library from Lab 2/3. 
-  - [ ] Note that we will re-run the tests from Lab 2 and 3 when grading Lab 4, so make sure you do not introduce bugs into your Raft implementation. 
-- [ ] You have completed this task when you pass all the tests in `shardctrler/`.
+- [x] Your task is to implement the interface specified above in `client.go` and `server.go` in the `shardctrler/` directory. 
+  - [x] Your shardctrler must be fault-tolerant, using your Raft library from Lab 2/3. 
+  - [x] Note that we will re-run the tests from Lab 2 and 3 when grading Lab 4, so make sure you do not introduce bugs into your Raft implementation. 
+- [x] You have completed this task when you pass all the tests in `shardctrler/`.
 
 ### Hint
 
-- [ ] Start with a stripped-down copy of your kvraft server.
-- [ ] You should implement duplicate client request detection for RPCs to the shard controller. 
-  - [ ] The shardctrler tests don't test this, but the shardkv tests will later use your shardctrler on an unreliable network; you may have trouble passing the shardkv tests if your shardctrler doesn't filter out duplicate RPCs.
-- [ ] The code in your state machine that performs the shard rebalancing needs to be deterministic. 
-  - [ ] In Go, map iteration order is [not deterministic](https://blog.golang.org/maps#TOC_7.).
-- [ ] Go maps are references. If you assign one variable of type map to another, both variables refer to the same map. Thus if you want to create a new `Config` based on a previous one, you need to create a new map object (with `make()`) and copy the keys and values individually.
-- [ ] The Go race detector (go test -race) may help you find bugs.
+- [x] Start with a stripped-down copy of your kvraft server.
+- [x] You should implement duplicate client request detection for RPCs to the shard controller. 
+  - [x] The shardctrler tests don't test this, but the shardkv tests will later use your shardctrler on an unreliable network; you may have trouble passing the shardkv tests if your shardctrler doesn't filter out duplicate RPCs.
+- [x] The code in your state machine that performs the shard rebalancing needs to be deterministic. 
+  - [x] In Go, map iteration order is [not deterministic](https://blog.golang.org/maps#TOC_7.).
+- [x] Go maps are references. If you assign one variable of type map to another, both variables refer to the same map. Thus if you want to create a new `Config` based on a previous one, you need to create a new map object (with `make()`) and copy the keys and values individually.
+- [x] The Go race detector (go test -race) may help you find bugs.
 
 
 

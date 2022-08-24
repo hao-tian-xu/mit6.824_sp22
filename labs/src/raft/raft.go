@@ -118,6 +118,8 @@ type Raft struct {
 	applyCond       sync.Cond
 	applySnapshot   bool
 	leaderId        int
+
+	name string
 }
 
 // INTERFACE
@@ -268,6 +270,8 @@ func (rf *Raft) updateMatchAndNextL(server int, newMatch int) {
 // custom log function
 
 func (rf *Raft) logL(verbosity LogVerbosity, topic LogTopic, format string, a ...interface{}) {
+	format = rf.name + ": " + format
+
 	LogRaft(verbosity, topic, rf.me, rf.currentTerm, format, a...)
 }
 
@@ -610,6 +614,10 @@ func (rf *Raft) apply(applyCh chan ApplyMsg) {
 
 			rf.logL(VBasic, TApply, "apply log %v (apply)", rf.lastApplied)
 
+			if rf.role == Leader && rf.name != "CTRLR" {
+				rf.logL(VCrucial, TApply, "apply log %v (apply)", rf.lastApplied)
+			}
+
 			applyMsg := ApplyMsg{
 				CommandValid: true,
 				Command:      rf.getLogL(rf.lastApplied).Command,
@@ -775,7 +783,7 @@ func (rf *Raft) processRequestReplyL(server int, args *RequestVoteArgs, reply *R
 // LEADER
 
 func (rf *Raft) becomeLeaderL() {
-	rf.logL(VBasic, TLeader, "leader (becomeLeaderL)")
+	rf.logL(VCrucial, TLeader, "leader (becomeLeaderL)")
 
 	// Volatile state on leaders:
 	//	(Reinitialized after election)
@@ -858,6 +866,11 @@ func (rf *Raft) processAppendReplyL(server int, args *AppendEntriesArgs, reply *
 			//	If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
 			//		and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 			if ok := rf.setCommitIndexL(); ok {
+
+				//if rf.name != "CTRLR" {
+				//	rf.logL(VCrucial, TLeader, "commit %v (processAppendReplyL)", rf.commitIndex)
+				//}
+
 				rf.applySignalL()
 			}
 		case false:
@@ -965,14 +978,21 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf := &Raft{}
 	rf.initL(peers, me, persister)
 
-	rf.logL(VBasic, TTrace, "start peer (Make)")
-
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	if rf.currentTerm != 0 {
 		rf.resetElectionTimeoutL(false)
 	}
+
+	return rf
+}
+
+func MakeName(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg, name string) *Raft {
+	rf := Make(peers, me, persister, applyCh)
+	rf.name = name
+
+	rf.logL(VBasic, TTrace, "start peer (Make)")
 
 	// start ticker goroutine to start elections
 	go rf.ticker()

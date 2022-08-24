@@ -100,13 +100,17 @@ func (ck *Clerk) _sendOpL(key string, args interface{}, rpc string, format strin
 
 			if reply.Err == OK || reply.Err == ErrNoKey {
 				return reply.Value
+			} else if reply.Err == ErrWrongGroup {
+				ck.config = ck.sm.Query(NA)
+			} else {
+				ck.changeLeaderL(gid, len(servers))
 			}
-			if reply.Err == ErrWrongGroup {
-				return ck._sendOpL(key, args, rpc, format)
-			}
+		} else {
+			ck.changeLeaderL(gid, len(servers))
 		}
-
-		ck.changeLeaderL(gid, len(servers))
+	} else {
+		ck.config = ck.sm.Query(NA)
+		ck.log(VVerbose, TTrace, "config: %v", ck.config)
 	}
 
 	ck.unlock("_sendOpL-sleep")
@@ -134,6 +138,8 @@ func (ck *Clerk) changeLeaderL(gid int, nServers int) {
 }
 
 func (ck *Clerk) log(verbose LogVerbosity, topic LogTopic, format string, a ...interface{}) {
+	format = "KCLNT: " + format
+
 	LogKVClnt(verbose, topic, ck.me, format, a...)
 }
 
@@ -182,17 +188,17 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientE
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.makeEnd = makeEnd
 
-	ck.config = ck.sm.Query(NA)
-
 	clientId++
 	ck.me = clientId % 100
 
 	ck.log(VBasic, TClient2, "start client")
 
+	ck.config = ck.sm.Query(NA)
+
+	ck.log(VVerbose, TTrace, "config: %v", ck.config)
+
 	ck.groupLeaders = map[int]int{}
 	ck.nextOpId = 0
-
-	go ck.pollConfig()
 
 	return ck
 }
