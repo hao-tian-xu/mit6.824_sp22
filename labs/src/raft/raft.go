@@ -614,10 +614,6 @@ func (rf *Raft) apply(applyCh chan ApplyMsg) {
 
 			rf.logL(VBasic, TApply, "apply log %v (apply)", rf.lastApplied)
 
-			if rf.role == Leader && rf.name != "CTRLR" {
-				rf.logL(VCrucial, TApply, "apply log %v (apply)", rf.lastApplied)
-			}
-
 			applyMsg := ApplyMsg{
 				CommandValid: true,
 				Command:      rf.getLogL(rf.lastApplied).Command,
@@ -866,11 +862,6 @@ func (rf *Raft) processAppendReplyL(server int, args *AppendEntriesArgs, reply *
 			//	If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
 			//		and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4).
 			if ok := rf.setCommitIndexL(); ok {
-
-				//if rf.name != "CTRLR" {
-				//	rf.logL(VCrucial, TLeader, "commit %v (processAppendReplyL)", rf.commitIndex)
-				//}
-
 				rf.applySignalL()
 			}
 		case false:
@@ -978,12 +969,20 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf := &Raft{}
 	rf.initL(peers, me, persister)
 
+	rf.logL(VBasic, TTrace, "start peer (Make)")
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	if rf.currentTerm != 0 {
 		rf.resetElectionTimeoutL(false)
 	}
+
+	// start ticker goroutine to start elections
+	go rf.ticker()
+
+	// start apply goroutine to send ApplyMsg to service
+	go rf.apply(applyCh)
 
 	return rf
 }
@@ -992,13 +991,7 @@ func MakeName(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh c
 	rf := Make(peers, me, persister, applyCh)
 	rf.name = name
 
-	rf.logL(VBasic, TTrace, "start peer (Make)")
-
-	// start ticker goroutine to start elections
-	go rf.ticker()
-
-	// start apply goroutine to send ApplyMsg to service
-	go rf.apply(applyCh)
+	rf.logL(VCrucial, TTrace, "start peer (Make)")
 
 	return rf
 }

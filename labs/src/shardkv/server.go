@@ -4,7 +4,6 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
-	"6.824/shardctrler"
 	. "6.824/util"
 	"bytes"
 	"fmt"
@@ -24,12 +23,6 @@ type Op struct {
 	Key   string
 	Value string
 
-	// self
-	Config shardctrler.Config
-
-	// other groups
-	Shard int
-
 	// identification
 	ClientId int
 	OpId     int
@@ -37,9 +30,7 @@ type Op struct {
 
 func (op *Op) String() string {
 	content := ""
-	if op.OpType == opUpdateConfig {
-		content = fmt.Sprint(op.Config)
-	} else if op.OpType == opGet {
+	if op.OpType == opGet {
 		content = fmt.Sprint(op.Key)
 	} else {
 		content = fmt.Sprintf("%v:%v", op.Key, op.Value)
@@ -79,12 +70,11 @@ func (r _Result) String() string {
 // SHARD KV
 
 type ShardKV struct {
-	mu           sync.Mutex
-	me           int
-	rf           *raft.Raft
-	applyCh      chan raft.ApplyMsg
+	mu  sync.Mutex
+	me  int
+	gid int
+
 	makeEnd      func(string) *labrpc.ClientEnd
-	gid          int
 	ctrlers      []*labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
 
@@ -94,16 +84,14 @@ type ShardKV struct {
 	resultChans map[int]chan _Result // commandIndex -> chan _Result
 	persister   *raft.Persister
 
-	sm       *shardctrler.Clerk
-	config   shardctrler.Config
-	updating int
-
 	// as client
 	me1          int
 	groupLeaders map[int]int
 	nextOpId     int
 
-	RequestCond sync.Cond
+	// raft
+	applyCh chan raft.ApplyMsg
+	rf      *raft.Raft
 }
 
 func (kv *ShardKV) init(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientEnd) {
@@ -112,9 +100,6 @@ func (kv *ShardKV) init(servers []*labrpc.ClientEnd, me int, persister *raft.Per
 
 	kv.log(VBasic, TKVServer2, "start kv server")
 
-	//kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.MakeName(servers, me, persister, kv.applyCh, fmt.Sprintf("GID%v", gid))
 	kv.makeEnd = makeEnd
 	kv.ctrlers = ctrlers
 	kv.maxraftstate = maxraftstate
@@ -125,16 +110,13 @@ func (kv *ShardKV) init(servers []*labrpc.ClientEnd, me int, persister *raft.Per
 	kv.resultChans = map[int]chan _Result{}
 	kv.persister = persister
 
-	kv.sm = shardctrler.MakeClerk(ctrlers)
-	kv.config = kv.sm.Query(NA)
-	kv.updating = NA
-
 	kvClientId--
 	kv.me1 = kvClientId
 	kv.groupLeaders = map[int]int{}
 	kv.nextOpId = 0
 
-	kv.RequestCond = *sync.NewCond(&kv.mu)
+	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.rf = raft.MakeName(servers, me, persister, kv.applyCh, fmt.Sprintf("GID%v", gid))
 }
 
 // CLIENT RPC HANDLER
@@ -160,18 +142,11 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *OpReply) {
 // process RPC request
 //
 func (kv *ShardKV) processOpL(op *Op, reply *OpReply) {
-	kv.log(VBasic, TKVServer1, "process %v, lastOp %v (processOpL)", op, kv.lastOps[op.ClientId])
+	kv.log(VBasic, TKVServer1, "process op %v, lastOp %v (processOpL)", op, kv.lastOps[op.ClientId])
 
 	// If op is the same as lastOp
 	if lastOp, ok := kv.lastOps[op.ClientId]; ok && op.isSame(&lastOp.Op) {
 		reply.Err, reply.Value = OK, lastOp.GetResult
-		return
-	}
-
-	// key not in this group
-	// TODO: wrong place to check
-	if op.OpType != opUpdateConfig && kv.config.Shards[key2shard(op.Key)] != kv.gid {
-		reply.Err = ErrWrongGroup
 		return
 	}
 
@@ -194,8 +169,6 @@ func (kv *ShardKV) processOpL(op *Op, reply *OpReply) {
 // wait for the commandIndex to be applied in kvserver, return true if it's the same op
 //
 func (kv *ShardKV) waitApplyL(commandIndex int, op *Op) _Result {
-	kv.log(VVerbose, TTrace, "%v waitApply (waitApplyL)", op)
-
 	// Make a channel for _Result transfer, if not existing
 	if _, ok := kv.resultChans[commandIndex]; !ok {
 		kv.resultChans[commandIndex] = make(chan _Result)
@@ -208,7 +181,7 @@ func (kv *ShardKV) waitApplyL(commandIndex int, op *Op) _Result {
 	kv.unlock("waitApply")
 	select {
 	case result = <-ch:
-	case <-time.After(MaxTimeout * time.Second): // TODO
+	case <-time.After(MaxTimeout * HeartbeatsInterval):
 		result.err = ErrTimeout
 	}
 	kv.lock("waitApply")
@@ -225,25 +198,6 @@ func (kv *ShardKV) waitApplyL(commandIndex int, op *Op) _Result {
 	return result
 }
 
-// REQUEST SHARDS RPC HANDLER
-
-func (kv *ShardKV) RequestShards(args *RequestShardsArgs, reply *RequestShardsReply) {
-	kv.lock("RequestShards")
-	defer kv.unlock("RequestShards")
-
-	kv.log(VBasic, TKVServer2, "request %v (RequestShards)", args)
-
-	if kv.updating == args.ConfigNum {
-		reply.Err = OK
-		reply.KVMap = DeepCopy(kv.kvMap)
-	} else if kv.updating < args.ConfigNum {
-		kv.RequestCond.Wait()
-	} else {
-		// TODO: what to do if request config num smaller than current config num
-		reply.Err = ErrBehind
-	}
-}
-
 // APPLIER
 
 //
@@ -257,8 +211,6 @@ func (kv *ShardKV) receiveApplyMsg() {
 		kv.unlock("receiveApplyMsg")
 		applyMsg := <-kv.applyCh
 		kv.lock("receiveApplyMsg")
-
-		kv.log(VVerbose, TTrace, "applyMsg %v (receiveApplyMsg)", applyMsg)
 
 		// If ApplyMsg is a command
 		if applyMsg.CommandValid {
@@ -291,7 +243,7 @@ func (kv *ShardKV) applyOpL(op *Op) _Result {
 	result := _Result{}
 	// If command is not processed
 	if lastOp, started := kv.lastOps[op.ClientId]; !started || !op.isSame(&lastOp.Op) {
-		kv.log(VBasic, TKVServer2, "apply %v! (applyOpL)", op)
+		kv.log(VBasic, TKVServer2, "apply %v (applyOpL)", op)
 
 		result.err = OK
 
@@ -313,8 +265,6 @@ func (kv *ShardKV) applyOpL(op *Op) _Result {
 				result.err = ErrNoKey
 				result.value = ""
 			}
-		case opUpdateConfig:
-			kv.applyUpdateConfigL(op)
 		}
 		// Remember lastOp for each client
 		kv.lastOps[op.ClientId] = &LastOp{*op, value}
@@ -325,82 +275,6 @@ func (kv *ShardKV) applyOpL(op *Op) _Result {
 		result.err = ErrDuplicate
 	}
 	return result
-}
-
-func (kv *ShardKV) applyUpdateConfigL(op *Op) {
-	kv.updating = op.Config.Num
-	defer func() { kv.updating = NA }()
-
-	kv.RequestCond.Broadcast()
-
-	newConfig := op.Config
-	newGidShards := map[int][]int{}
-
-	for shard, newGid := range newConfig.Shards {
-		if newGid == kv.gid {
-			currentGid := kv.config.Shards[shard]
-			if currentGid != 0 && currentGid != newGid {
-				newGidShards[newGid] = append(newGidShards[newGid], shard)
-			}
-		}
-	}
-
-	done := make(chan bool, len(newGidShards))
-	for gid, shards := range newGidShards {
-		go kv.requestShards(gid, shards, done)
-	}
-
-	kv.unlock("applyUpdateConfigL")
-	for i := 0; i < len(newGidShards); i++ {
-		<-done
-	}
-	kv.lock("applyUpdateConfigL")
-
-	kv.config = newConfig
-}
-
-func (kv *ShardKV) requestShards(gid int, shards []int, done chan bool) {
-	kv.lock("requestShards")
-	defer kv.unlock("requestShards")
-
-	kvMap := kv.requestShardsL(gid, shards)
-
-	for k, v := range kvMap {
-		if InSlice(key2shard(k), shards) {
-			kv.kvMap[k] = v
-		}
-	}
-
-	done <- true
-}
-
-func (kv *ShardKV) requestShardsL(gid int, shards []int) map[string]string {
-	args := &RequestShardsArgs{gid, shards, kv.updating,
-		kv.me1, kv.nextOpId}
-	kv.nextOpId++
-
-	for {
-		if servers, ok := kv.config.Groups[gid]; ok {
-			if _, ok := kv.groupLeaders[gid]; !ok {
-				kv.groupLeaders[gid] = 0
-			}
-			leaderId := kv.groupLeaders[gid]
-			srv := kv.makeEnd(servers[leaderId])
-			reply := &RequestShardsReply{}
-
-			kv.unlock("requestShardsL")
-			ok := srv.Call(rpcRequestShards, args, reply)
-			kv.lock("requestShardsL")
-
-			if ok {
-				kv.log(VVerbose, TClient2, "reply from %v: %v (requestShardsL)", leaderId, reply)
-			}
-
-			if reply.Err == OK {
-				return reply.KVMap
-			}
-		}
-	}
 }
 
 // snapshot
@@ -469,49 +343,6 @@ func (kv *ShardKV) unlock(method string) {
 func (kv *ShardKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
-}
-
-// POLL
-
-func (kv *ShardKV) pollConfig() {
-	kv.lock("pollConfig")
-	defer kv.unlock("pollConfig")
-
-	for {
-		if _, isLeader := kv.rf.GetState(); isLeader {
-			config := kv.sm.Query(NA)
-			if config.Num > kv.config.Num && kv.updating == NA {
-				kv.updateConfigL(config)
-			}
-		}
-
-		kv.unlock("pollConfig")
-		time.Sleep(HeartbeatsInterval)
-		kv.lock("pollConfig")
-	}
-}
-
-func (kv *ShardKV) updateConfigL(config shardctrler.Config) {
-	kv.log(VBasic, TClient1, "new config %v (updateConfigL)", config)
-
-	op := &Op{OpType: opUpdateConfig, Config: config,
-		ClientId: kv.me1, OpId: kv.nextOpId}
-	kv.nextOpId++
-
-	for {
-		reply := &OpReply{}
-		kv.processOpL(op, reply)
-
-		kv.log(VVerbose, TClient2, "new config %v reply: %v (updateConfigL)", config.Num, reply.Err)
-
-		if reply.Err == OK || reply.Err == ErrWrongLeader {
-			return
-		}
-
-		kv.unlock("updateConfigL")
-		time.Sleep(HeartbeatsInterval)
-		kv.lock("updateConfigL")
-	}
 }
 
 //

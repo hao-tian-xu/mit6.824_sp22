@@ -4,21 +4,12 @@ import "fmt"
 import . "6.824/util"
 
 const (
-	// client
 	opPut    = "Put"
 	opAppend = "Append"
 	opGet    = "Get"
 
 	rpcGet       = "ShardKV.Get"
 	rpcPutAppend = "ShardKV.PutAppend"
-
-	// self
-	opUpdateConfig = "UpdateConfig"
-
-	// other groups
-	opRequestShards
-
-	rpcRequestShards = "ShardKV.RequestShards"
 )
 
 //
@@ -66,18 +57,4 @@ type OpReply struct {
 
 func (o OpReply) String() string {
 	return fmt.Sprintf("%v %v", o.Err, o.Value)
-}
-
-type RequestShardsArgs struct {
-	Gid       int
-	Shards    []int
-	ConfigNum int
-
-	ClientId int
-	OpId     int
-}
-
-type RequestShardsReply struct {
-	Err   Err
-	KVMap map[string]string
 }

@@ -17,6 +17,8 @@ import "strconv"
 import "fmt"
 import "time"
 
+import . "6.824/util"
+
 func randstring(n int) string {
 	b := make([]byte, 2*n)
 	crand.Read(b)
@@ -154,6 +156,7 @@ func (cfg *config) deleteClient(ck *Clerk) {
 
 // Shutdown i'th server of gi'th group, by isolating it
 func (cfg *config) ShutdownServer(gi int, i int) {
+	LogTest(VBasic, TTester, NA, "shutdown server %v-%v", 100+gi, i)
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 
@@ -195,6 +198,7 @@ func (cfg *config) ShutdownServer(gi int, i int) {
 }
 
 func (cfg *config) ShutdownGroup(gi int) {
+	LogTest(VBasic, TTester, NA, "shutdown group %v", 100+gi)
 	for i := 0; i < cfg.n; i++ {
 		cfg.ShutdownServer(gi, i)
 	}
@@ -202,6 +206,7 @@ func (cfg *config) ShutdownGroup(gi int) {
 
 // start i'th server in gi'th group
 func (cfg *config) StartServer(gi int, i int) {
+	LogTest(VBasic, TTester, NA, "start server %v-%v", 100+gi, i)
 	cfg.mu.Lock()
 
 	gg := cfg.groups[gi]
@@ -262,6 +267,7 @@ func (cfg *config) StartServer(gi int, i int) {
 }
 
 func (cfg *config) StartGroup(gi int) {
+	LogTest(VBasic, TTester, NA, "start group %v", 100+gi)
 	for i := 0; i < cfg.n; i++ {
 		cfg.StartServer(gi, i)
 	}
@@ -304,6 +310,7 @@ func (cfg *config) shardclerk() *shardctrler.Clerk {
 
 // tell the shardctrler that a group is joining.
 func (cfg *config) join(gi int) {
+	LogTest(VBasic, TTester, NA, "join group %v", 100+gi)
 	cfg.joinm([]int{gi})
 }
 
@@ -322,6 +329,7 @@ func (cfg *config) joinm(gis []int) {
 
 // tell the shardctrler that a group is leaving.
 func (cfg *config) leave(gi int) {
+	LogTest(VBasic, TTester, NA, "leave group %v", 100+gi)
 	cfg.leavem([]int{gi})
 }
 

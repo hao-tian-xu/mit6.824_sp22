@@ -72,7 +72,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 }
 
 func (ck *Clerk) sendOpL(key string, args interface{}, rpc string, format string) string {
-	ck.log(VBasic, TClient1, "%v send (sendOpL)", format)
+	ck.log(VCrucial, TTester, "%v send (sendOpL)", format) // TODO: Tester
 	defer ck.log(VBasic, TClient1, "%v return (sendOpL)", format)
 
 	ck.nextOpId++
@@ -110,7 +110,6 @@ func (ck *Clerk) _sendOpL(key string, args interface{}, rpc string, format strin
 		}
 	} else {
 		ck.config = ck.sm.Query(NA)
-		ck.log(VVerbose, TTrace, "config: %v", ck.config)
 	}
 
 	ck.unlock("_sendOpL-sleep")
@@ -186,16 +185,13 @@ func (ck *Clerk) pollConfig() {
 func MakeClerk(ctrlers []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardctrler.MakeClerk(ctrlers)
+	ck.config = ck.sm.Query(NA)
 	ck.makeEnd = makeEnd
 
 	clientId++
 	ck.me = clientId % 100
 
 	ck.log(VBasic, TClient2, "start client")
-
-	ck.config = ck.sm.Query(NA)
-
-	ck.log(VVerbose, TTrace, "config: %v", ck.config)
 
 	ck.groupLeaders = map[int]int{}
 	ck.nextOpId = 0
