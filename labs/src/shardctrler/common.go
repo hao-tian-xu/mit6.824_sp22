@@ -47,6 +47,10 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+func (c Config) String() string {
+	return fmt.Sprintf("#%v, %v, %v", c.Num, c.Shards, groupsToGids(c.Groups))
+}
+
 // RPC TYPES
 
 type JoinArgs struct {

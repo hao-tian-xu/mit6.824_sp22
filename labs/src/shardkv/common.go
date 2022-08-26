@@ -10,6 +10,9 @@ const (
 
 	rpcGet       = "ShardKV.Get"
 	rpcPutAppend = "ShardKV.PutAppend"
+
+	opAddShards     = "AddShards"
+	opHandOffShards = "HandOffShards"
 )
 
 //
@@ -55,6 +58,19 @@ type OpReply struct {
 	Value string
 }
 
-func (o OpReply) String() string {
-	return fmt.Sprintf("%v %v", o.Err, o.Value)
+// HANDOFF SHARDS RPC TYPE
+
+type HandOffShardsArgs struct {
+	Gid     int
+	Shards  []int
+	KVMap   map[string]string
+	LastOps map[int]LastOp
+}
+
+func (h HandOffShardsArgs) String() string {
+	return fmt.Sprintf("HandOff %v", h.Shards)
+}
+
+type HandOffShardsReply struct {
+	Err Err
 }

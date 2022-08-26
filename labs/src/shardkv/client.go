@@ -152,25 +152,6 @@ func (ck *Clerk) unlock(method string) {
 	ck.Unlock()
 }
 
-func (ck *Clerk) pollConfig() {
-	ck.lock("pollConfig")
-	defer ck.unlock("pollConfig")
-
-	for {
-		config := ck.sm.Query(NA)
-		if config.Num > ck.config.Num {
-
-			ck.log(VBasic, TTrace, "new config %v", config.Num)
-
-			ck.config = config
-		}
-
-		ck.unlock("pollConfig")
-		time.Sleep(HeartbeatsInterval)
-		ck.lock("pollConfig")
-	}
-}
-
 // MAKE
 
 //
