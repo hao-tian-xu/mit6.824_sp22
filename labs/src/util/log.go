@@ -70,9 +70,13 @@ type (
 // INIT CONFIGURATION
 
 var logStart time.Time
+
+var verbosity int
+
 var raftVerbosity int
 var kvVerbosity int
 var ctrlrVerbosity int
+var testVerbosity int
 
 func getVerbosity(env string) int {
 	v := os.Getenv(env)
@@ -84,13 +88,21 @@ func getVerbosity(env string) int {
 			log.Fatalf("Invalid verbosity %v", v)
 		}
 	}
-	return level
+	if level != 0 {
+		return level
+	} else {
+		return verbosity
+	}
 }
 
 func init() {
+	verbosity = getVerbosity("VERBOSE")
+
 	raftVerbosity = getVerbosity("RV")
 	kvVerbosity = getVerbosity("KV")
 	ctrlrVerbosity = getVerbosity("CV")
+	testVerbosity = getVerbosity("TV")
+
 	logStart = time.Now()
 
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
@@ -137,7 +149,9 @@ func LogCtrlerClnt(verbosity LogVerbosity, topic LogTopic, peerId int, format st
 // tester
 
 func LogTest(verbosity LogVerbosity, topic LogTopic, peerId int, format string, a ...interface{}) {
-	_log("T", verbosity, topic, peerId, NA, format, a...)
+	if testVerbosity >= int(verbosity) {
+		_log("T", verbosity, topic, peerId, NA, format, a...)
+	}
 }
 
 //

@@ -29,6 +29,7 @@ type Op struct {
 	Gid       int
 	KVMap     map[string]string
 	LastOps   map[int]LastOp
+	Handoff   Handoff
 
 	// identification
 	ClientId int
@@ -80,6 +81,12 @@ func (r _Result) String() string {
 	return fmt.Sprintf("%v %v (%v)", r.err, r.value, r.op)
 }
 
+type Handoff struct {
+	Gid       int
+	ConfigNum int
+	Shards    *[]int
+}
+
 // SHARD KV
 
 type ShardKV struct {
@@ -103,8 +110,8 @@ type ShardKV struct {
 	validShards map[int]bool      // shards held by this group
 	lastOps     map[int]LastOp    // clientId -> LastOp
 	// handOffL state
-	receivedHandoffs map[int][][]int         // configNum -> []shards
-	pendingHandoffs  map[int]map[int][][]int // configNum -> (gid -> shards)
+	receivedHandoffs map[int][][]int  // configNum -> []shards
+	pendingHandoffs  map[Handoff]bool // configNum -> (gid -> shards)
 
 	resultChans map[int]chan _Result // commandIndex -> chan _Result
 	ctrler      *shardctrler.Clerk
@@ -132,7 +139,7 @@ func (kv *ShardKV) init(servers []*labrpc.ClientEnd, me int, persister *raft.Per
 	kv.validShards = map[int]bool{}
 	kv.lastOps = map[int]LastOp{}
 	kv.receivedHandoffs = map[int][][]int{}
-	kv.pendingHandoffs = map[int]map[int][][]int{}
+	kv.pendingHandoffs = map[Handoff]bool{}
 
 	kv.resultChans = map[int]chan _Result{}
 	kv.ctrler = shardctrler.MakeClerk(kv.ctrlers)
@@ -328,7 +335,7 @@ func (kv *ShardKV) applyOpL(op *Op) _Result {
 		case opRemoveShards:
 			kv.applyRemoveShardsL(op)
 		case opHandOffDone:
-			delete(kv.pendingHandoffs, op.ConfigNum)
+			delete(kv.pendingHandoffs, op.Handoff)
 		}
 		// Remember lastOp for each client
 		kv.lastOps[op.ClientId] = LastOp{op.ClientId, op.OpId, result.value}
@@ -379,26 +386,39 @@ func (kv *ShardKV) applyAddShardsL(op *Op) {
 }
 
 func (kv *ShardKV) applyRemoveShardsL(op *Op) {
+	if kv.removed(op) {
+		return
+	}
+
 	for _, shard := range op.Shards {
 		delete(kv.validShards, shard)
 	}
 
-	kv.pendHandoffsL(op)
+	kv.pendingHandoffs[Handoff{op.Gid, op.ConfigNum, &op.Shards}] = true
 }
 
-func (kv *ShardKV) pendHandoffsL(op *Op) {
-	if _, ok := kv.pendingHandoffs[op.ConfigNum]; !ok {
-		kv.pendingHandoffs[op.ConfigNum] = map[int][][]int{}
-	}
-
-	for _, shards := range kv.pendingHandoffs[op.ConfigNum][op.Gid] {
-		if reflect.DeepEqual(shards, op.Shards) {
-			return
+func (kv *ShardKV) removed(op *Op) bool {
+	for _, shard := range op.Shards {
+		if !kv.validShards[shard] {
+			return true
 		}
 	}
-
-	kv.pendingHandoffs[op.ConfigNum][op.Gid] = append(kv.pendingHandoffs[op.ConfigNum][op.Gid], op.Shards)
+	return false
 }
+
+//func (kv *ShardKV) pendHandoffsL(op *Op) {
+//	if _, ok := kv.pendingHandoffs[op.ConfigNum]; !ok {
+//		kv.pendingHandoffs[op.ConfigNum] = map[int][][]int{}
+//	}
+//
+//	for _, shards := range kv.pendingHandoffs[op.ConfigNum][op.Gid] {
+//		if reflect.DeepEqual(shards, op.Shards) {
+//			return
+//		}
+//	}
+//
+//	kv.pendingHandoffs[op.ConfigNum][op.Gid] = append(kv.pendingHandoffs[op.ConfigNum][op.Gid], op.Shards)
+//}
 
 // snapshot
 
@@ -433,7 +453,7 @@ func (kv *ShardKV) readSnapshotL(snapshot []byte) {
 	var lastOps map[int]LastOp
 
 	var receivedHandOffs map[int][][]int
-	var pendingHandOffs map[int]map[int][][]int
+	var pendingHandOffs map[Handoff]bool
 
 	if d.Decode(&kvMap) != nil ||
 		d.Decode(&validShards) != nil ||
@@ -504,9 +524,9 @@ func (kv *ShardKV) removeShardsL(configNum int, shards []int, gid int) {
 		&Op{OpType: opRemoveShards, ConfigNum: configNum, Shards: shards, Gid: gid})
 }
 
-func (kv *ShardKV) handOffDoneL(configNum int) {
+func (kv *ShardKV) handoffDoneL(handoff Handoff) {
 	kv.reconfigureL(
-		&Op{OpType: opHandOffDone, ConfigNum: configNum})
+		&Op{OpType: opHandOffDone, Handoff: handoff})
 }
 
 func (kv *ShardKV) reconfigureL(op *Op) { // MEMO: no retry
@@ -598,16 +618,13 @@ func (kv *ShardKV) checkPendingHandoffs() {
 	kv.lock("checkPendingHandoffs")
 	defer kv.unlock("checkPendingHandoffs")
 
-	for configNum, gidShardsSlice := range kv.pendingHandoffs {
-		for gid, shardsSlice := range gidShardsSlice {
-			for _, shards := range shardsSlice {
-				args := &HandOffShardsArgs{kv.gid, kv.me,
-					configNum, shards,
-					copyKVMap(kv.kvMap), copyLastOps(kv.lastOps)}
-				kv.handOffL(args, gid)
-			}
-		}
-		kv.handOffDoneL(configNum)
+	for handoff, _ := range kv.pendingHandoffs {
+		args := &HandOffShardsArgs{kv.gid, kv.me,
+			handoff.ConfigNum, *handoff.Shards,
+			copyKVMap(kv.kvMap), copyLastOps(kv.lastOps)}
+
+		kv.handOffL(args, handoff.Gid)
+		kv.handoffDoneL(handoff)
 	}
 }
 
