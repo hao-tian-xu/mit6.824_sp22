@@ -39,7 +39,7 @@ func (op *Op) String() string {
 	content := ""
 	if op.OpType == opAddShards {
 		content = fmt.Sprintf("%v: %v", op.ConfigNum, op.Shards)
-	} else if op.OpType == opRemoveShards {
+	} else if op.OpType == opRemoveShards || op.OpType == opHandOffDone {
 		content = fmt.Sprintf("%v: %v to %v", op.ConfigNum, op.Shards, op.Gid)
 	} else if op.OpType == opGet {
 		content = fmt.Sprint(op.Key)
@@ -103,8 +103,8 @@ type ShardKV struct {
 	validShards map[int]bool      // shards held by this group
 	lastOps     map[int]LastOp    // clientId -> LastOp
 	// handOffL state
-	receivedHandOffs map[int][][]int       // configNum -> []shards
-	pendingHandOffs  map[int]map[int][]int // configNum -> (gid -> shards)
+	receivedHandoffs map[int][][]int         // configNum -> []shards
+	pendingHandoffs  map[int]map[int][][]int // configNum -> (gid -> shards)
 
 	resultChans map[int]chan _Result // commandIndex -> chan _Result
 	ctrler      *shardctrler.Clerk
@@ -131,8 +131,8 @@ func (kv *ShardKV) init(servers []*labrpc.ClientEnd, me int, persister *raft.Per
 	kv.kvMap = map[string]string{}
 	kv.validShards = map[int]bool{}
 	kv.lastOps = map[int]LastOp{}
-	kv.receivedHandOffs = map[int][][]int{}
-	kv.pendingHandOffs = map[int]map[int][]int{}
+	kv.receivedHandoffs = map[int][][]int{}
+	kv.pendingHandoffs = map[int]map[int][][]int{}
 
 	kv.resultChans = map[int]chan _Result{}
 	kv.ctrler = shardctrler.MakeClerk(kv.ctrlers)
@@ -221,12 +221,6 @@ func (kv *ShardKV) waitApplyL(commandIndex int, op *Op) _Result {
 	// Process result
 	if result.err == OK && !op.isSame(result.op.ClientId, result.op.OpId) {
 		result.err = ErrNotApplied
-	}
-
-	if result.err == OK {
-		if op.OpType == opAddShards || op.OpType == opRemoveShards {
-			kv.log(VBasic, TConfig1, "new validShards %v (waitApplyL)", kv.validShards)
-		}
 	}
 
 	return result
@@ -334,7 +328,7 @@ func (kv *ShardKV) applyOpL(op *Op) _Result {
 		case opRemoveShards:
 			kv.applyRemoveShardsL(op)
 		case opHandOffDone:
-			delete(kv.pendingHandOffs, op.ConfigNum)
+			delete(kv.pendingHandoffs, op.ConfigNum)
 		}
 		// Remember lastOp for each client
 		kv.lastOps[op.ClientId] = LastOp{op.ClientId, op.OpId, result.value}
@@ -349,12 +343,11 @@ func (kv *ShardKV) applyOpL(op *Op) _Result {
 }
 
 func (kv *ShardKV) applyAddShardsL(op *Op) {
-
-	// already added
 	if kv.notNewShardsL(op.ConfigNum, op.Shards) {
+		// already added
 		return
 	}
-	kv.receivedHandOffs[op.ConfigNum] = append(kv.receivedHandOffs[op.ConfigNum], op.Shards)
+	kv.receivedHandoffs[op.ConfigNum] = append(kv.receivedHandoffs[op.ConfigNum], op.Shards)
 
 	// atomic: update validShards, kvMap, and lastOps
 	for _, shard := range op.Shards {
@@ -377,23 +370,34 @@ func (kv *ShardKV) applyAddShardsL(op *Op) {
 		//}
 	}
 
-	kv.log(VTemp, TTrace, "received kvMap: %v (applyAddShardsL)", op.KVMap)
-	kv.log(VTemp, TTrace, "current kvMap: %v (applyAddShardsL)", kv.kvMap)
+	kv.unlock("applyAddShardsL")
+	if _, isLeader := kv.rf.GetState(); isLeader {
+		kv.log(VTemp, TTrace, "received kvMap: %v (applyAddShardsL)", op.KVMap)
+		kv.log(VTemp, TTrace, "current kvMap: %v (applyAddShardsL)", kv.kvMap)
+	}
+	kv.lock("applyAddShardsL")
 }
 
 func (kv *ShardKV) applyRemoveShardsL(op *Op) {
 	for _, shard := range op.Shards {
 		delete(kv.validShards, shard)
 	}
-	if _, ok := kv.pendingHandOffs[op.ConfigNum]; !ok {
-		kv.pendingHandOffs[op.ConfigNum] = map[int][]int{}
-	}
-	kv.pendingHandOffs[op.ConfigNum][op.Gid] = op.Shards
 
-	//args := &HandOffShardsArgs{kv.gid, kv.me,
-	//	op.ConfigNum, op.Shards,
-	//	copyKVMap(kv.kvMap), copyLastOps(kv.lastOps)}
-	//go kv.handOffL(args, op.Gid)
+	kv.pendHandoffsL(op)
+}
+
+func (kv *ShardKV) pendHandoffsL(op *Op) {
+	if _, ok := kv.pendingHandoffs[op.ConfigNum]; !ok {
+		kv.pendingHandoffs[op.ConfigNum] = map[int][][]int{}
+	}
+
+	for _, shards := range kv.pendingHandoffs[op.ConfigNum][op.Gid] {
+		if reflect.DeepEqual(shards, op.Shards) {
+			return
+		}
+	}
+
+	kv.pendingHandoffs[op.ConfigNum][op.Gid] = append(kv.pendingHandoffs[op.ConfigNum][op.Gid], op.Shards)
 }
 
 // snapshot
@@ -404,8 +408,8 @@ func (kv *ShardKV) snapshotL(index int) {
 	if e.Encode(kv.kvMap) != nil ||
 		e.Encode(kv.validShards) != nil ||
 		e.Encode(kv.lastOps) != nil ||
-		e.Encode(kv.receivedHandOffs) != nil ||
-		e.Encode(kv.pendingHandOffs) != nil {
+		e.Encode(kv.receivedHandoffs) != nil ||
+		e.Encode(kv.pendingHandoffs) != nil {
 
 		log.Fatalln("snapshotL() failed!")
 	} else {
@@ -429,7 +433,7 @@ func (kv *ShardKV) readSnapshotL(snapshot []byte) {
 	var lastOps map[int]LastOp
 
 	var receivedHandOffs map[int][][]int
-	var pendingHandOffs map[int]map[int][]int
+	var pendingHandOffs map[int]map[int][][]int
 
 	if d.Decode(&kvMap) != nil ||
 		d.Decode(&validShards) != nil ||
@@ -444,15 +448,15 @@ func (kv *ShardKV) readSnapshotL(snapshot []byte) {
 		kv.validShards = validShards
 		kv.lastOps = lastOps
 
-		kv.receivedHandOffs = receivedHandOffs
-		kv.pendingHandOffs = pendingHandOffs
+		kv.receivedHandoffs = receivedHandOffs
+		kv.pendingHandoffs = pendingHandOffs
 	}
 }
 
 // HELPER
 
 func (kv *ShardKV) notNewShardsL(configNum int, newShards []int) bool {
-	for _, shards := range kv.receivedHandOffs[configNum] {
+	for _, shards := range kv.receivedHandoffs[configNum] {
 		if reflect.DeepEqual(shards, newShards) {
 			return true
 		}
@@ -526,7 +530,7 @@ func (kv *ShardKV) reconfigureL(op *Op) { // MEMO: no retry
 	kv.waitApplyL(commandIndex, op)
 }
 
-// POLL CONFIGURATION
+// START AND TICKER
 
 func (kv *ShardKV) start() {
 	kv.lock("start")
@@ -552,7 +556,7 @@ func (kv *ShardKV) firstConfigL() {
 	}
 	kv.lock("start")
 
-	kv.log(VBasic, TConfig1, "first config %v", config.Shards)
+	kv.log(VVerbose, TConfig2, "first config %v", config.Shards)
 
 	for shard, gid := range config.Shards {
 		if gid == kv.gid {
@@ -566,7 +570,7 @@ func (kv *ShardKV) ticker() {
 		time.Sleep(HeartbeatsInterval)
 
 		if _, isLeader := kv.rf.GetState(); isLeader {
-			kv.checkPendingHandOffs()
+			kv.checkPendingHandoffs()
 			kv.pollConfig()
 		}
 	}
@@ -590,16 +594,18 @@ func (kv *ShardKV) pollConfig() {
 	}
 }
 
-func (kv *ShardKV) checkPendingHandOffs() {
-	kv.lock("checkPendingHandOffs")
-	defer kv.unlock("checkPendingHandOffs")
+func (kv *ShardKV) checkPendingHandoffs() {
+	kv.lock("checkPendingHandoffs")
+	defer kv.unlock("checkPendingHandoffs")
 
-	for configNum, gidShards := range kv.pendingHandOffs {
-		for gid, shards := range gidShards {
-			args := &HandOffShardsArgs{kv.gid, kv.me,
-				configNum, shards,
-				copyKVMap(kv.kvMap), copyLastOps(kv.lastOps)}
-			kv.handOffL(args, gid)
+	for configNum, gidShardsSlice := range kv.pendingHandoffs {
+		for gid, shardsSlice := range gidShardsSlice {
+			for _, shards := range shardsSlice {
+				args := &HandOffShardsArgs{kv.gid, kv.me,
+					configNum, shards,
+					copyKVMap(kv.kvMap), copyLastOps(kv.lastOps)}
+				kv.handOffL(args, gid)
+			}
 		}
 		kv.handOffDoneL(configNum)
 	}

@@ -463,83 +463,32 @@ ok      6.824/raft      499.867s
 ### 2nd design
 
 - state:
-  - 'kvMap'
-  - 'lastOps'
-  - 'validShards'
-  - 'handOffs'
+  - `kvMap`
+  - `lastOps`
+  - `validShards`
+  - handoffs
+    - `receivedHandoffs`
+    - `pendingHandoffs`
 - state change:
-  - [x] start
-    - if first time
-      - get first config and add shards to 'validShards'
-  - [x] hand off shards
-    - delete shards from 'validShards'
-    - hands off shards to their current group
-    - hands off related 'lastOps'
-  - [x] receive shards
-    - add shards to 'validShards'
-    - update 'kvMap'
-    - update 'lastOps'
-- operations
-  - [x] handoffShards(shards, gid)
-    - retry by polling
-
-  - [x] addShards(shards, kvMap, lastOps)
-- RPC
-  - [x] HandOffShards
-- details
-  - [x] where to check 'validShards'
-    - [x] receive client RPCs (return fast)
-    - [x] receive ApplyMsgs + waitApply
-      - linearization: wrong request get in the log but after reconfiguration in the log
-
-
-
-
-
-### 3rd Design
-
-- State:
-
-  - storage
-
-    - `kvMap`
-
-    - `lastOps`
-
-    - `validShards`
-
-  - state
-
-    - `configNum`
-
-    - `toHandOff [int][]int // configNum -> shards`
-
-- State change:
-
-  - firstConfig
-    - `if configNum == 0`
-      - get first config and add shards to `validShards`
-      - `configNum++`
-  - ticker
-    - pollConfig
-      - deleteShards
-      - handOff shards in `toHandOff[configNum + 1]`
-  - deleteShards
-    - delete shards from `validShards`
-    - add shards to `toHandOff[configNum + 1]`
-  - addShards
+  - start (without raft)
+    - get first config and add shards to `validShards`
+  - add shards (raft)
     - add shards to `validShards`
     - update `kvMap`
     - update `lastOps`
-    - 
-  - hand off shards
-    - delete shards from 'validShards'
+    - add handOffs to `receivedHandoffs`
+  - remove shards (raft)
+    - remove shards from `validShards`
+    - add handOffs to `pendingHandoffs`
+  - handOffs done (raft)
+    - remove handOffs from `pendingHandoffs`
+- RPC
+  - HandOffShards
     - hands off shards to their current group
-    - hands off related 'lastOps'
-  - receive shards
-    - add shards to 'validShards'
-    - update 'kvMap'
-    - update 'lastOps'
+    - hands off related `lastOps`
+
+- details
+  - where to check 'validShards': receive ApplyMsgs
 
 
 

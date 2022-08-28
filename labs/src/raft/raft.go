@@ -632,7 +632,11 @@ func (rf *Raft) apply(applyCh chan ApplyMsg) {
 		if rf.commitIndex > rf.lastApplied {
 			rf.lastApplied++
 
-			rf.logL(VCrucial, TApply, "apply log %v (apply)", rf.lastApplied)
+			rf.logL(VVerbose, TApply, "apply log %v (apply)", rf.lastApplied)
+
+			if rf.lastApplied <= rf.logFirstIndexL() { // TODO: not perfect
+				return
+			}
 
 			applyMsg := ApplyMsg{
 				CommandValid: true,
