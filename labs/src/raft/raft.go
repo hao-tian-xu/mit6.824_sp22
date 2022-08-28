@@ -280,9 +280,16 @@ func (rf *Raft) updateMatchAndNextL(server int, newMatch int) {
 func (rf *Raft) logL(verbosity LogVerbosity, topic LogTopic, format string, a ...interface{}) {
 	format = rf.name + ": " + format
 	peerId := rf.me
-	if rf.name[0:3] == "GID" {
-		gid, _ := strconv.Atoi(rf.name[3:6])
-		peerId += (gid % 3) * 3
+
+	if len(rf.name) != 0 {
+		if rf.name[0:3] == "GID" {
+			gid, _ := strconv.Atoi(rf.name[3:6])
+			peerId += (gid % 3) * 3
+		}
+
+		if rf.name[0:3] == "CTR" {
+			return
+		}
 	}
 
 	LogRaft(verbosity, topic, peerId, rf.currentTerm, format, a...)
@@ -625,7 +632,7 @@ func (rf *Raft) apply(applyCh chan ApplyMsg) {
 		if rf.commitIndex > rf.lastApplied {
 			rf.lastApplied++
 
-			rf.logL(VBasic, TApply, "apply log %v (apply)", rf.lastApplied)
+			rf.logL(VCrucial, TApply, "apply log %v (apply)", rf.lastApplied)
 
 			applyMsg := ApplyMsg{
 				CommandValid: true,
@@ -998,8 +1005,8 @@ func MakeName(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh c
 	// initialization
 	rf := &Raft{}
 
-	rf.initL(peers, me, persister)
 	rf.name = name
+	rf.initL(peers, me, persister)
 
 	rf.logL(VCrucial, TTrace, "start peer (Make)")
 

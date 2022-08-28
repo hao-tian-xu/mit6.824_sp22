@@ -139,9 +139,6 @@ func (kv *ShardKV) init(servers []*labrpc.ClientEnd, me int, persister *raft.Per
 
 	kv.clientId = -gid
 	kv.opId = 0
-
-	// Use snapshot to recover
-	kv.readSnapshotL(kv.persister.ReadSnapshot())
 }
 
 // CLIENT RPC HANDLER
@@ -175,11 +172,11 @@ func (kv *ShardKV) processOpL(op *Op, reply *OpReply) {
 		return
 	}
 
-	// If shard is not in the group
-	if !kv.validShards[key2shard(op.Key)] {
-		reply.Err = ErrWrongGroup
-		return
-	}
+	//// If shard is not in the group
+	//if !kv.validShards[key2shard(op.Key)] {
+	//	reply.Err = ErrWrongGroup
+	//	return
+	//}
 
 	// Send op to raft by rf.Start()
 	commandIndex, _, isLeader := kv.rf.Start(*op)
@@ -426,9 +423,11 @@ func (kv *ShardKV) readSnapshotL(snapshot []byte) {
 
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
+
 	var kvMap map[string]string
 	var validShards map[int]bool
 	var lastOps map[int]LastOp
+
 	var receivedHandOffs map[int][][]int
 	var pendingHandOffs map[int]map[int][]int
 
@@ -444,6 +443,7 @@ func (kv *ShardKV) readSnapshotL(snapshot []byte) {
 		kv.kvMap = kvMap
 		kv.validShards = validShards
 		kv.lastOps = lastOps
+
 		kv.receivedHandOffs = receivedHandOffs
 		kv.pendingHandOffs = pendingHandOffs
 	}
@@ -528,60 +528,55 @@ func (kv *ShardKV) reconfigureL(op *Op) { // MEMO: no retry
 
 // POLL CONFIGURATION
 
-func (kv *ShardKV) firstConfig() {
+func (kv *ShardKV) start() {
+	kv.lock("start")
+	defer kv.unlock("start")
+
 	// get first valid config
+	kv.firstConfigL()
+
+	// Use snapshot to recover
+	kv.readSnapshotL(kv.persister.ReadSnapshot())
+
+	go kv.receiveApplyMsg()
+
+	go kv.ticker()
+}
+
+func (kv *ShardKV) firstConfigL() {
+	kv.unlock("start")
 	config := kv.ctrler.Query(1)
 	for config.Num == 0 {
 		time.Sleep(HeartbeatsInterval)
 		config = kv.ctrler.Query(1)
 	}
+	kv.lock("start")
 
-	kv.lock("firstConfig")
-	defer kv.unlock("firstConfig")
+	kv.log(VBasic, TConfig1, "first config %v", config.Shards)
 
-	// add shards to 'validShards'
-	shards := make([]int, 0)
 	for shard, gid := range config.Shards {
 		if gid == kv.gid {
-			shards = append(shards, shard)
+			kv.validShards[shard] = true
 		}
 	}
-	if len(shards) != 0 {
-		for len(kv.validShards) == 0 {
-			if _, isLeader := kv.rf.GetState(); isLeader {
-				kv.addShardsL(config.Num, shards, map[string]string{}, map[int]LastOp{})
-			}
-
-			kv.unlock("firstConfig")
-			time.Sleep(HeartbeatsInterval)
-			kv.lock("firstConfig")
-		}
-	}
-
-	// poll config
-	kv.tickerL()
 }
 
-func (kv *ShardKV) tickerL() {
+func (kv *ShardKV) ticker() {
 	for {
-
-		kv.unlock("tickerL-sleep")
 		time.Sleep(HeartbeatsInterval)
-		kv.lock("tickerL-sleep")
 
 		if _, isLeader := kv.rf.GetState(); isLeader {
-
-			kv.checkPendingHandOffsL()
-
-			kv.pollConfigL()
+			kv.checkPendingHandOffs()
+			kv.pollConfig()
 		}
 	}
 }
 
-func (kv *ShardKV) pollConfigL() {
-	kv.unlock("pollConfigL")
+func (kv *ShardKV) pollConfig() {
 	config := kv.ctrler.Query(-1)
-	kv.lock("pollConfigL")
+
+	kv.lock("pollConfig")
+	defer kv.unlock("pollConfig")
 
 	gidShards := map[int][]int{}
 	for shard, gid := range config.Shards {
@@ -595,7 +590,10 @@ func (kv *ShardKV) pollConfigL() {
 	}
 }
 
-func (kv *ShardKV) checkPendingHandOffsL() {
+func (kv *ShardKV) checkPendingHandOffs() {
+	kv.lock("checkPendingHandOffs")
+	defer kv.unlock("checkPendingHandOffs")
+
 	for configNum, gidShards := range kv.pendingHandOffs {
 		for gid, shards := range gidShards {
 			args := &HandOffShardsArgs{kv.gid, kv.me,
@@ -670,9 +668,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// kv.mck = shardctrler.MakeClerk(kv.ctrlers)
 	kv.init(servers, me, persister, maxraftstate, gid, ctrlers, makeEnd)
 
-	go kv.firstConfig()
-
-	go kv.receiveApplyMsg()
+	go kv.start()
 
 	return kv
 }
