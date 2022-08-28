@@ -73,8 +73,11 @@ func (r _Result) String() string {
 // SHARD CONTROLLER
 
 type ShardCtrler struct {
-	mu      sync.Mutex
-	me      int
+	mu sync.Mutex
+
+	me   int
+	name string
+
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
 
@@ -178,6 +181,10 @@ func (sc *ShardCtrler) waitApplyL(commandIndex int, op *Op) _Result {
 	// Process result
 	if result.err == OK && !op.isSame(result.op) {
 		result.err = ErrNotApplied
+	}
+
+	if result.err == OK && op.OpType != opQuery {
+		sc.log(VCrucial, TCtrler1, "new config: %v", sc.configs[sc.nowL()])
 	}
 
 	return result
@@ -405,7 +412,7 @@ func (sc *ShardCtrler) nowL() int {
 // debug
 
 func (sc *ShardCtrler) log(verbose LogVerbosity, topic LogTopic, format string, a ...interface{}) {
-	format = "CTRLR: " + format
+	format = sc.name + ": " + format
 
 	LogCtrler(verbose, topic, sc.me, format, a...)
 }
@@ -467,6 +474,7 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister) *ShardCtrler {
 	sc := new(ShardCtrler)
 	sc.me = me
+	sc.name = fmt.Sprintf("CTRLR%v", sc.me)
 
 	sc.log(VBasic, TCtrler2, "start controller")
 
@@ -475,7 +483,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 	labgob.Register(Op{})
 	sc.applyCh = make(chan raft.ApplyMsg)
-	sc.rf = raft.MakeName(servers, me, persister, sc.applyCh, "CTRLR")
+	sc.rf = raft.MakeName(servers, me, persister, sc.applyCh, sc.name)
 
 	sc.gidShards = map[int][]int{}
 

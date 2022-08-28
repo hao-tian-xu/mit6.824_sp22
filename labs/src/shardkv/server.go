@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -23,10 +24,11 @@ type Op struct {
 	Value string
 
 	// reconfiguration
-	Shards  []int
-	Gid     int
-	KVMap   map[string]string
-	LastOps map[int]LastOp
+	ConfigNum int
+	Shards    []int
+	Gid       int
+	KVMap     map[string]string
+	LastOps   map[int]LastOp
 
 	// identification
 	ClientId int
@@ -35,28 +37,34 @@ type Op struct {
 
 func (op *Op) String() string {
 	content := ""
-	if op.OpType == opGet {
+	if op.OpType == opAddShards {
+		content = fmt.Sprintf("%v: %v", op.ConfigNum, op.Shards)
+	} else if op.OpType == opHandOffShards {
+		content = fmt.Sprintf("%v: %v to %v", op.ConfigNum, op.Shards, op.Gid)
+	} else if op.OpType == opGet {
 		content = fmt.Sprint(op.Key)
 	} else {
-		content = fmt.Sprintf("%v:%v", op.Key, op.Value)
+		content = fmt.Sprintf("%v: %v", op.Key, op.Value)
 	}
-	return fmt.Sprintf("%v%v-%v %v", op.OpType, op.ClientId, op.OpId, content)
+	return fmt.Sprintf("%v-%v %v %v", op.ClientId, op.OpId, op.OpType, content)
 }
 
-func (op *Op) isSame(op1 *Op) bool {
-	if op.ClientId == op1.ClientId && op.OpId == op1.OpId && op.OpType == op1.OpType {
+func (op *Op) isSame(clientId int, opId int) bool {
+	if op.ClientId == clientId && op.OpId == opId {
 		return true
 	}
 	return false
 }
 
 type LastOp struct {
-	Op        Op
+	ClientId int
+	OpId     int
+
 	GetResult string
 }
 
-func (l *LastOp) String() string {
-	return fmt.Sprintf("%v-%v", l.Op.ClientId, l.Op.OpId)
+func (l LastOp) String() string {
+	return fmt.Sprintf("%v-%v", l.ClientId, l.OpId)
 }
 
 //
@@ -69,15 +77,17 @@ type _Result struct {
 }
 
 func (r _Result) String() string {
-	return fmt.Sprintf("%v %v", r.err, r.op)
+	return fmt.Sprintf("%v %v (%v)", r.err, r.value, r.op)
 }
 
 // SHARD KV
 
 type ShardKV struct {
-	mu  sync.Mutex
-	me  int
-	gid int
+	mu sync.Mutex
+
+	me   int
+	gid  int
+	name string
 
 	makeEnd      func(string) *labrpc.ClientEnd
 	ctrlers      []*labrpc.ClientEnd
@@ -92,6 +102,7 @@ type ShardKV struct {
 	kvMap       map[string]string // kv storage
 	validShards map[int]bool      // shards held by this group
 	lastOps     map[int]LastOp    // clientId -> LastOp
+	handOffs    map[int][][]int   // configNum -> []Shards
 
 	resultChans map[int]chan _Result // commandIndex -> chan _Result
 	ctrler      *shardctrler.Clerk
@@ -103,8 +114,9 @@ type ShardKV struct {
 func (kv *ShardKV) init(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*labrpc.ClientEnd, makeEnd func(string) *labrpc.ClientEnd) {
 	kv.me = me
 	kv.gid = gid
+	kv.name = fmt.Sprintf("GID%v-%v", gid, kv.me)
 
-	kv.log(VBasic, TKVServer2, "start kv server")
+	kv.log(VVerbose, TKVServer2, "start kv server (init)")
 
 	kv.makeEnd = makeEnd
 	kv.ctrlers = ctrlers
@@ -112,17 +124,21 @@ func (kv *ShardKV) init(servers []*labrpc.ClientEnd, me int, persister *raft.Per
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.persister = persister
-	kv.rf = raft.MakeName(servers, me, persister, kv.applyCh, fmt.Sprintf("GID%v", gid))
+	kv.rf = raft.MakeName(servers, me, persister, kv.applyCh, kv.name)
 
 	kv.kvMap = map[string]string{}
 	kv.validShards = map[int]bool{}
 	kv.lastOps = map[int]LastOp{}
+	kv.handOffs = map[int][][]int{}
 
 	kv.resultChans = map[int]chan _Result{}
 	kv.ctrler = shardctrler.MakeClerk(kv.ctrlers)
 
 	kv.clientId = -gid
 	kv.opId = 0
+
+	// Use snapshot to recover
+	kv.readSnapshotL(kv.persister.ReadSnapshot())
 }
 
 // CLIENT RPC HANDLER
@@ -151,8 +167,14 @@ func (kv *ShardKV) processOpL(op *Op, reply *OpReply) {
 	kv.log(VBasic, TKVServer1, "process op %v, lastOp %v (processOpL)", op, kv.lastOps[op.ClientId])
 
 	// If op is the same as lastOp
-	if lastOp, ok := kv.lastOps[op.ClientId]; ok && op.isSame(&lastOp.Op) {
+	if lastOp, ok := kv.lastOps[op.ClientId]; ok && op.isSame(lastOp.ClientId, lastOp.OpId) {
 		reply.Err, reply.Value = OK, lastOp.GetResult
+		return
+	}
+
+	// If shard is not in the group
+	if !kv.validShards[key2shard(op.Key)] {
+		reply.Err = ErrWrongGroup
 		return
 	}
 
@@ -194,14 +216,45 @@ func (kv *ShardKV) waitApplyL(commandIndex int, op *Op) _Result {
 
 	delete(kv.resultChans, commandIndex)
 
-	kv.log(VBasic, TKVServer1, "command %v apply result: %v (waitApplyL)", commandIndex, result)
+	kv.log(VBasic, topic(op), "command %v apply result: %v (waitApplyL)", commandIndex, result)
 
 	// Process result
-	if result.err == OK && !op.isSame(result.op) {
+	if result.err == OK && !op.isSame(result.op.ClientId, result.op.OpId) {
 		result.err = ErrNotApplied
 	}
 
+	if result.err == OK {
+		if op.OpType == opAddShards || op.OpType == opHandOffShards {
+			kv.log(VBasic, TConfig1, "new validShards %v (waitApplyL)", kv.validShards)
+		}
+	}
+
 	return result
+}
+
+// HANDOFFSHARDS RPC HANDLER
+
+func (kv *ShardKV) HandOffShards(args *HandOffShardsArgs, reply *HandOffShardsReply) { // MEMO: multi receptions
+	kv.lock("HandOffShards")
+	defer kv.unlock("HandOffShards")
+
+	kv.log(VVerbose, TConfig2, "handOffShards from %v-%v: %v (HandOffShards)", args.Gid, args.Sid, args.Shards)
+
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	if kv.notNewShardsL(args.ConfigNum, args.Shards) {
+		reply.Err = OK
+		return
+	}
+
+	kv.addShardsL(args.ConfigNum, args.Shards, args.KVMap, args.LastOps)
+
+	if kv.notNewShardsL(args.ConfigNum, args.Shards) {
+		reply.Err = OK
+	}
 }
 
 // APPLIER
@@ -240,6 +293,9 @@ func (kv *ShardKV) receiveApplyMsg() {
 
 		// If ApplyMsg is a snapshot
 		if applyMsg.SnapshotValid {
+
+			kv.log(VBasic, TSnapshot, "read snapshot %v (receiveApplyMsg)", applyMsg.CommandIndex)
+
 			kv.readSnapshotL(applyMsg.Snapshot)
 		}
 	}
@@ -248,8 +304,15 @@ func (kv *ShardKV) receiveApplyMsg() {
 func (kv *ShardKV) applyOpL(op *Op) _Result {
 	result := _Result{}
 	// If command is not processed
-	if lastOp, started := kv.lastOps[op.ClientId]; !started || !op.isSame(&lastOp.Op) {
-		kv.log(VBasic, TKVServer2, "apply %v (applyOpL)", op)
+	if lastOp, started := kv.lastOps[op.ClientId]; !started || !op.isSame(lastOp.ClientId, lastOp.OpId) {
+
+		kv.log(VVerbose, topic(op), "apply %v (applyOpL)", op)
+
+		// wrong group
+		if op.OpType != opAddShards && op.OpType != opHandOffShards && !kv.validShards[key2shard(op.Key)] {
+			result.err = ErrWrongGroup
+			return result
+		}
 
 		result.err = OK
 
@@ -257,8 +320,10 @@ func (kv *ShardKV) applyOpL(op *Op) _Result {
 		switch op.OpType {
 		case opPut:
 			kv.kvMap[op.Key] = op.Value
+			result.value = kv.kvMap[op.Key]
 		case opAppend:
 			kv.kvMap[op.Key] += op.Value
+			result.value = kv.kvMap[op.Key]
 		case opGet:
 			result.value = kv.kvMap[op.Key]
 			if result.value == "" {
@@ -270,7 +335,7 @@ func (kv *ShardKV) applyOpL(op *Op) _Result {
 			kv.applyHandOffShardsL(op)
 		}
 		// Remember lastOp for each client
-		kv.lastOps[op.ClientId] = LastOp{*op, result.value}
+		kv.lastOps[op.ClientId] = LastOp{op.ClientId, op.OpId, result.value}
 
 	} else {
 		kv.log(VBasic, TWarn, "%v just processed... (receiveApplyMsg)", op)
@@ -282,42 +347,55 @@ func (kv *ShardKV) applyOpL(op *Op) _Result {
 }
 
 func (kv *ShardKV) applyAddShardsL(op *Op) {
-	shards, kvMap, lastOps := op.Shards, op.KVMap, op.LastOps
+
+	// already added
+	if kv.notNewShardsL(op.ConfigNum, op.Shards) {
+		return
+	}
+	kv.handOffs[op.ConfigNum] = append(kv.handOffs[op.ConfigNum], op.Shards)
+
 	// atomic: update validShards, kvMap, and lastOps
-	for _, shard := range shards {
+	for _, shard := range op.Shards {
 		kv.validShards[shard] = true
 	}
-	for k, v := range kvMap {
-		if InSlice(key2shard(k), shards) {
+	for k, v := range op.KVMap {
+		if InSlice(key2shard(k), op.Shards) {
 			kv.kvMap[k] = v
 		}
 	}
-	for clientId, lastOp := range lastOps {
-		o := lastOp.Op
-		if (o.OpType == opPut || o.OpType == opAppend) &&
-			InSlice(key2shard(o.Key), shards) {
-
+	for clientId, lastOp := range op.LastOps { // MEMO: not 1000% sure
+		if lastOp.OpId > kv.lastOps[clientId].OpId {
 			kv.lastOps[clientId] = lastOp
 		}
+		//o := lastOp.Op
+		//if (o.OpType == opPut || o.OpType == opAppend) &&
+		//	InSlice(key2shard(o.Key), op.Shards) {
+		//
+		//	kv.lastOps[clientId] = lastOp
+		//}
 	}
+
+	kv.log(VTemp, TTrace, "received kvMap: %v (applyAddShardsL)", op.KVMap)
+	kv.log(VTemp, TTrace, "current kvMap: %v (applyAddShardsL)", kv.kvMap)
 }
 
 func (kv *ShardKV) applyHandOffShardsL(op *Op) {
-	shards, gid := op.Shards, op.Gid
-
-	for _, shard := range shards {
+	for _, shard := range op.Shards {
 		delete(kv.validShards, shard)
 	}
 
-	args := &HandOffShardsArgs{kv.gid, shards, kv.kvMap, kv.lastOps}
-	go kv.handOff(args, gid)
+	args := &HandOffShardsArgs{kv.gid, kv.me,
+		op.ConfigNum, op.Shards,
+		copyKVMap(kv.kvMap), copyLastOps(kv.lastOps)}
+	go kv.handOff(args, op.Gid)
 }
 
 // client end hand off
 
 func (kv *ShardKV) handOff(args *HandOffShardsArgs, gid int) {
+	servers := kv.ctrler.Query(args.ConfigNum).Groups[gid]
+
 	for {
-		servers := kv.ctrler.Query(NA).Groups[gid]
 		for si := 0; si < len(servers); si++ {
 			srv := kv.makeEnd(servers[si])
 			reply := &HandOffShardsReply{}
@@ -329,30 +407,8 @@ func (kv *ShardKV) handOff(args *HandOffShardsArgs, gid int) {
 			}
 			// ... not ok, or ErrWrongLeader
 		}
+
 		time.Sleep(HeartbeatsInterval)
-	}
-}
-
-// HAND OFF SHARDS RPC HANDLER
-
-func (kv *ShardKV) HandOffShards(args *HandOffShardsArgs, reply *HandOffShardsReply) {
-	kv.lock("HandOffShards")
-	defer kv.unlock("HandOffShards")
-
-	if _, isLeader := kv.rf.GetState(); !isLeader {
-		reply.Err = ErrWrongLeader
-		return
-	}
-
-	if kv.noNewShardsL(args.Shards) {
-		reply.Err = OK
-		return
-	}
-
-	kv.addShardsL(args.Shards, args.KVMap, args.LastOps)
-
-	if kv.noNewShardsL(args.Shards) {
-		reply.Err = OK
 	}
 }
 
@@ -362,7 +418,9 @@ func (kv *ShardKV) snapshotL(index int) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	if e.Encode(kv.kvMap) != nil ||
-		e.Encode(kv.lastOps) != nil {
+		e.Encode(kv.validShards) != nil ||
+		e.Encode(kv.lastOps) != nil ||
+		e.Encode(kv.handOffs) != nil {
 
 		log.Fatalln("snapshotL() failed!")
 	} else {
@@ -381,32 +439,38 @@ func (kv *ShardKV) readSnapshotL(snapshot []byte) {
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
 	var kvMap map[string]string
+	var validShards map[int]bool
 	var lastOps map[int]LastOp
+	var handOffs map[int][][]int
+
 	if d.Decode(&kvMap) != nil ||
-		d.Decode(&lastOps) != nil {
+		d.Decode(&validShards) != nil ||
+		d.Decode(&lastOps) != nil ||
+		d.Decode(&handOffs) != nil {
 
 		log.Fatalln("readSnapshotL() failed!")
 	} else {
-		kv.log(VBasic, TSnapshot, "read snapshot, lastOps %v (readSnapshotL)", lastOps)
 
 		kv.kvMap = kvMap
+		kv.validShards = validShards
 		kv.lastOps = lastOps
+		kv.handOffs = handOffs
 	}
 }
 
 // HELPER
 
-func (kv *ShardKV) noNewShardsL(shards []int) bool {
-	for _, shard := range shards {
-		if !kv.validShards[shard] {
-			return false
+func (kv *ShardKV) notNewShardsL(configNum int, newShards []int) bool {
+	for _, shards := range kv.handOffs[configNum] {
+		if reflect.DeepEqual(shards, newShards) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func (kv *ShardKV) log(verbose LogVerbosity, topic LogTopic, format string, a ...interface{}) {
-	format = fmt.Sprintf("GID%v: ", kv.gid) + format
+	format = kv.name + ": " + format
 	peerId := kv.me + (kv.gid%3)*3
 
 	LogKV(verbose, topic, peerId, format, a...)
@@ -433,87 +497,27 @@ func (kv *ShardKV) Kill() {
 	// Your code here, if desired.
 }
 
-// POLL CONFIGURATION
-
-func (kv *ShardKV) pollConfig() {
-	config := kv.ctrler.Query(-1)
-	for config.Num == 0 {
-		time.Sleep(HeartbeatsInterval)
-		config = kv.ctrler.Query(-1)
-	}
-
-	kv.log(VBasic, TConfig, "first config %v (pollConfig)", config)
-
-	// get first valid config and add shards to 'validShards'
-	shards := make([]int, 0)
-	for shard, gid := range config.Shards {
-		if gid == kv.gid {
-			shards = append(shards, shard)
-		}
-	}
-	kv.addShards(shards, map[string]string{}, map[int]LastOp{})
-
-	kv._pollConfig()
-}
-
-func (kv *ShardKV) _pollConfig() {
-	for {
-		time.Sleep(HeartbeatsInterval)
-
-		if _, isLeader := kv.rf.GetState(); isLeader {
-			config := kv.ctrler.Query(-1)
-			gidShards := kv.getGidShards(config)
-
-			for gid, shards := range gidShards {
-				kv.handOffShards(shards, gid)
-			}
-		}
-	}
-}
-
-func (kv *ShardKV) getGidShards(config shardctrler.Config) map[int][]int {
-	kv.lock("_pollConfig")
-	defer kv.unlock("_pollConfig")
-
-	gidShards := map[int][]int{}
-	for shard, gid := range config.Shards {
-		if kv.validShards[shard] && gid != kv.gid { // TODO: check tuple syntax
-			gidShards[gid] = append(gidShards[gid], shard)
-		}
-	}
-
-	return gidShards
-}
-
 // RECONFIGURATION
 
-func (kv *ShardKV) addShards(shards []int, kvMap map[string]string, lastOps map[int]LastOp) {
-	kv.lock("addShards")
-	defer kv.unlock("addShards")
-
+func (kv *ShardKV) addShardsL(configNum int, shards []int, kvMap map[string]string, lastOps map[int]LastOp) {
 	kv.reconfigureL(
-		&Op{OpType: opAddShards, Shards: shards, KVMap: kvMap, LastOps: lastOps})
+		&Op{OpType: opAddShards, ConfigNum: configNum, Shards: shards, KVMap: kvMap, LastOps: lastOps})
 }
 
-func (kv *ShardKV) handOffShards(shards []int, gid int) {
-	kv.lock("handOffShards")
-	defer kv.unlock("handOffShards")
-
+func (kv *ShardKV) handOffShardsL(configNum int, shards []int, gid int) {
 	kv.reconfigureL(
-		&Op{OpType: opHandOffShards, Shards: shards, Gid: gid})
+		&Op{OpType: opHandOffShards, ConfigNum: configNum, Shards: shards, Gid: gid})
 }
 
-func (kv *ShardKV) reconfigureL(op *Op) {
-	// MEMO: no retry
-
-	kv.log(VBasic, TConfig, "process op %v", op)
+func (kv *ShardKV) reconfigureL(op *Op) { // MEMO: no retry
+	kv.log(VBasic, TConfig1, "process op %v (reconfigureL)", op)
 
 	op.ClientId = kv.clientId
 	op.OpId = kv.opId
 	kv.opId++
 
 	// return if op is the same as lastOp
-	if lastOp, ok := kv.lastOps[op.ClientId]; ok && op.isSame(&lastOp.Op) {
+	if lastOp, ok := kv.lastOps[op.ClientId]; ok && op.isSame(lastOp.ClientId, lastOp.OpId) {
 		return
 	}
 
@@ -524,6 +528,68 @@ func (kv *ShardKV) reconfigureL(op *Op) {
 	}
 
 	kv.waitApplyL(commandIndex, op)
+}
+
+// POLL CONFIGURATION
+
+func (kv *ShardKV) pollConfig() {
+	config := kv.ctrler.Query(-1)
+	for config.Num == 0 {
+		time.Sleep(HeartbeatsInterval)
+		config = kv.ctrler.Query(-1)
+	}
+
+	kv.lock("pollConfig")
+	defer kv.unlock("pollConfig")
+
+	// get first valid config and add shards to 'validShards'
+	shards := make([]int, 0)
+	for shard, gid := range config.Shards {
+		if gid == kv.gid {
+			shards = append(shards, shard)
+		}
+	}
+
+	if len(shards) != 0 {
+		for len(kv.validShards) == 0 {
+			if _, isLeader := kv.rf.GetState(); isLeader {
+				kv.addShardsL(config.Num, shards, map[string]string{}, map[int]LastOp{})
+			}
+
+			kv.unlock("pollConfig")
+			time.Sleep(HeartbeatsInterval)
+			kv.lock("pollConfig")
+		}
+	}
+
+	kv._pollConfigL()
+}
+
+func (kv *ShardKV) _pollConfigL() {
+	for {
+
+		kv.unlock("_pollConfigL-sleep")
+		time.Sleep(HeartbeatsInterval)
+		kv.lock("_pollConfigL-sleep")
+
+		if _, isLeader := kv.rf.GetState(); isLeader {
+
+			kv.unlock("_pollConfigL-query")
+			config := kv.ctrler.Query(-1)
+			kv.lock("_pollConfigL-query")
+
+			gidShards := map[int][]int{}
+			for shard, gid := range config.Shards {
+				if kv.validShards[shard] && gid != kv.gid {
+					gidShards[gid] = append(gidShards[gid], shard)
+				}
+			}
+
+			for gid, shards := range gidShards {
+				kv.handOffShardsL(config.Num, shards, gid)
+			}
+		}
+	}
 }
 
 //

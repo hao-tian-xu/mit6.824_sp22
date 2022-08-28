@@ -72,8 +72,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 }
 
 func (ck *Clerk) sendOpL(key string, args interface{}, rpc string, format string) string {
-	ck.log(VCrucial, TTester, "%v send (sendOpL)", format) // TODO: Tester
-	defer ck.log(VBasic, TClient1, "%v return (sendOpL)", format)
+	ck.log(VBasic, TClient1, "%v send (sendOpL)", format)
+	defer ck.log(VVerbose, TClient2, "%v return (sendOpL)", format)
 
 	ck.nextOpId++
 	return ck._sendOpL(key, args, rpc, format)
@@ -96,7 +96,7 @@ func (ck *Clerk) _sendOpL(key string, args interface{}, rpc string, format strin
 		ck.lock("sendOpL")
 
 		if ok {
-			ck.log(VVerbose, TClient2, "reply from %v: %v (_sendOpL)", leaderId, reply)
+			ck.log(VVerbose, TClient2, "reply from %v-%v: %v (_sendOpL)", gid, leaderId, reply)
 
 			if reply.Err == OK || reply.Err == ErrNoKey {
 				return reply.Value

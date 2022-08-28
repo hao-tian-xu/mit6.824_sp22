@@ -54,11 +54,3 @@ func InSlice(value int, slice []int) bool {
 	}
 	return false
 }
-
-func DeepCopy(kvMap map[string]string) map[string]string {
-	result := map[string]string{}
-	for k, v := range kvMap {
-		result[k] = v
-	}
-	return result
-}

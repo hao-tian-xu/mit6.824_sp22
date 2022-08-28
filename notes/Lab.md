@@ -469,29 +469,28 @@ ok      6.824/raft      499.867s
 - state change:
   - [x] start
     - get first valid config and add shards to 'validShards'
-  - [ ] hand off shards
+  - [x] hand off shards
     - delete shards from 'validShards'
     - hands off shards to their current group
     - hands off related 'lastOps'
-  - [ ] receive shards
+  - [x] receive shards
     - add shards to 'validShards'
     - update 'kvMap'
     - update 'lastOps'
 - operations
-  - handoffShards(shards, gid)
+  - [x] handoffShards(shards, gid)
     - retry by polling
 
-  - addShards(shards, kvMap, lastOps)
+  - [x] addShards(shards, kvMap, lastOps)
 
 - RPC
-  - HandOffShards
+  - [x] HandOffShards
 
 - details
-  - where to check 'validShards'
-    - receive client RPCs (return fast)
-    - receive ApplyMsgs 
+  - [x] where to check 'validShards'
+    - [x] receive client RPCs (return fast)
+    - [x] receive ApplyMsgs + waitApply
       - linearization: wrong request get in the log but after reconfiguration in the log
-
 
 
 

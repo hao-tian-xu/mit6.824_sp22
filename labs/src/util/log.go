@@ -25,7 +25,6 @@ const (
 
 	// Topic
 	//	raft basic
-
 	TLeader   LogTopic = "LEAD"
 	TAppend   LogTopic = "APND"
 	TSnapshot LogTopic = "SNAP"
@@ -40,21 +39,24 @@ const (
 
 	TLogFail    LogTopic = "LOG0"
 	TLogSuccess LogTopic = "LOG1"
-	//	client
 
+	//	client
 	TClient1 LogTopic = "CLT1"
 	TClient2 LogTopic = "CLT2"
-	//	servers
 
+	//	servers
 	TCtrler1   LogTopic = "CTR1"
 	TCtrler2   LogTopic = "CTR2"
 	TKVServer1 LogTopic = "KVS1"
 	TKVServer2 LogTopic = "KVS2"
+
+	TConfig1 LogTopic = "CNF1"
+	TConfig2 LogTopic = "CNF2"
+
 	//	tester
-
 	TTester LogTopic = "TSTR"
-	//	extra
 
+	//	extra
 	TError LogTopic = "ERRO"
 	TWarn  LogTopic = "WARN"
 	TTrace LogTopic = "TRCE"

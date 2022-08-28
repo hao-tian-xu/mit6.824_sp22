@@ -13,39 +13,42 @@ import typer
 # Mapping from topics to colors
 TOPICS = {
     # Leader: Yellow
-    "LEAD": "yellow",           # leader and rpc send
-    "APND": "bright_yellow",    # append receive and reply
-    "SNAP": "gold1",            # snapshot recieve and reply
+    "LEAD": "yellow",
+    "APND": "bright_yellow",
+    "SNAP": "gold1",
     # Candidate: Cyan
-    "CAND": "cyan",             # raft candidate
-    "VOTE": "bright_cyan",      # raft vote
+    "CAND": "cyan",
+    "VOTE": "bright_cyan",
     # Grey
-    "DEMO": "black",            # raft demotion
-    "TICK": "bright_white",     # raft tick
+    "DEMO": "black",
+    "TICK": "bright_white",
     # Log: Blue
-    "LOG0": "blue",             # raft log fail
-    "LOG1": "bright_blue",      # raft log success
-    "CMIT": "sky_blue1",        # raft commit
-    "APLY": "deep_sky_blue4",   # server apply
+    "LOG0": "blue",
+    "LOG1": "bright_blue",
+    "CMIT": "sky_blue1",
+    "APLY": "deep_sky_blue4",
 
     # Client: Green
-    "CLT1": "green",            # client
-    "CLT2": "light_green",      # client
+    "CLT1": "green",
+    "CLT2": "light_green",
 
     # KV Server: Orange
-    "KVS1": "dark_orange3",     # kvserver
-    "KVS2": "navajo_white1",    # kvserver
+    "KVS1": "dark_orange3",
+    "KVS2": "navajo_white1",
     # Controller: Olive
-    "CTR1": "dark_khaki",       # shard controller
-    "CTR2": "dark_olive_green1",# shard controller
+    "CTR1": "yellow4",
+    "CTR2": "dark_olive_green1",
+
+    "CNF1": "blue",
+    "CNF2": "sky_blue1",
 
     # Tester: Purple
-    "TSTR": "purple",           # tester
+    "TSTR": "purple",
 
     # Warn: Red
-    "ERRO": "dark_red",         # error
-    "WARN": "bright_red",       # warn
-    "TRCE": "bright_white",     # trace
+    "ERRO": "dark_red",
+    "WARN": "bright_red",
+    "TRCE": "bright_white",
 }
 # fmt: on
 

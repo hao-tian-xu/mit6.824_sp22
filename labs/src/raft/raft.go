@@ -24,6 +24,7 @@ import (
 	"log"
 	"math/rand"
 	"sort"
+	"strconv"
 
 	//	"bytes"
 	"sync"
@@ -239,6 +240,13 @@ func (rf *Raft) initL(peers []*labrpc.ClientEnd, me int, persister *Persister) {
 	rf.applyCond = *sync.NewCond(&rf.mu)
 	rf.applySnapshot = false
 	rf.leaderId = NA
+
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+
+	if rf.currentTerm != 0 {
+		rf.resetElectionTimeoutL(false)
+	}
 }
 
 func (rf *Raft) nPeers() int {
@@ -271,8 +279,13 @@ func (rf *Raft) updateMatchAndNextL(server int, newMatch int) {
 
 func (rf *Raft) logL(verbosity LogVerbosity, topic LogTopic, format string, a ...interface{}) {
 	format = rf.name + ": " + format
+	peerId := rf.me
+	if rf.name[0:3] == "GID" {
+		gid, _ := strconv.Atoi(rf.name[3:6])
+		peerId += (gid % 3) * 3
+	}
 
-	LogRaft(verbosity, topic, rf.me, rf.currentTerm, format, a...)
+	LogRaft(verbosity, topic, peerId, rf.currentTerm, format, a...)
 }
 
 // custom lock function with log
@@ -967,16 +980,10 @@ func (rf *Raft) processInstallReplyL(server int, args *InstallSnapshotArgs, repl
 func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	// initialization
 	rf := &Raft{}
+
 	rf.initL(peers, me, persister)
 
 	rf.logL(VBasic, TTrace, "start peer (Make)")
-
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
-	if rf.currentTerm != 0 {
-		rf.resetElectionTimeoutL(false)
-	}
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
@@ -988,10 +995,19 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 }
 
 func MakeName(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg, name string) *Raft {
-	rf := Make(peers, me, persister, applyCh)
+	// initialization
+	rf := &Raft{}
+
+	rf.initL(peers, me, persister)
 	rf.name = name
 
 	rf.logL(VCrucial, TTrace, "start peer (Make)")
+
+	// start ticker goroutine to start elections
+	go rf.ticker()
+
+	// start apply goroutine to send ApplyMsg to service
+	go rf.apply(applyCh)
 
 	return rf
 }
