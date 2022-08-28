@@ -466,9 +466,11 @@ ok      6.824/raft      499.867s
   - 'kvMap'
   - 'lastOps'
   - 'validShards'
+  - 'handOffs'
 - state change:
   - [x] start
-    - get first valid config and add shards to 'validShards'
+    - if first time
+      - get first config and add shards to 'validShards'
   - [x] hand off shards
     - delete shards from 'validShards'
     - hands off shards to their current group
@@ -482,10 +484,8 @@ ok      6.824/raft      499.867s
     - retry by polling
 
   - [x] addShards(shards, kvMap, lastOps)
-
 - RPC
   - [x] HandOffShards
-
 - details
   - [x] where to check 'validShards'
     - [x] receive client RPCs (return fast)
@@ -496,7 +496,50 @@ ok      6.824/raft      499.867s
 
 
 
+### 3rd Design
 
+- State:
+
+  - storage
+
+    - `kvMap`
+
+    - `lastOps`
+
+    - `validShards`
+
+  - state
+
+    - `configNum`
+
+    - `toHandOff [int][]int // configNum -> shards`
+
+- State change:
+
+  - firstConfig
+    - `if configNum == 0`
+      - get first config and add shards to `validShards`
+      - `configNum++`
+  - ticker
+    - pollConfig
+      - deleteShards
+      - handOff shards in `toHandOff[configNum + 1]`
+  - deleteShards
+    - delete shards from `validShards`
+    - add shards to `toHandOff[configNum + 1]`
+  - addShards
+    - add shards to `validShards`
+    - update `kvMap`
+    - update `lastOps`
+    - 
+  - hand off shards
+    - delete shards from 'validShards'
+    - hands off shards to their current group
+    - hands off related 'lastOps'
+  - receive shards
+    - add shards to 'validShards'
+    - update 'kvMap'
+    - update 'lastOps'
 
 
 

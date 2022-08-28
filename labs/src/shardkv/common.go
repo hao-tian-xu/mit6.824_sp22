@@ -11,8 +11,9 @@ const (
 	rpcGet       = "ShardKV.Get"
 	rpcPutAppend = "ShardKV.PutAppend"
 
-	opAddShards     = "AddShards"
-	opHandOffShards = "HandOffShards"
+	opAddShards    = "AddShards"
+	opRemoveShards = "RemoveShards"
+	opHandOffDone  = "HandOffDone"
 )
 
 //
@@ -86,7 +87,7 @@ type HandOffShardsReply struct {
 
 func topic(op *Op) LogTopic {
 	topic := TKVServer2
-	if op.OpType == opAddShards || op.OpType == opHandOffShards {
+	if op.OpType == opAddShards || op.OpType == opRemoveShards {
 		topic = TConfig2
 	}
 	return topic
